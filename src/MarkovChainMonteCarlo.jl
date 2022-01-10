@@ -3,11 +3,12 @@ module MarkovChainMonteCarlo
 using ..GaussianProcessEmulator
 using ..ParameterDistributionStorage
 
-using Statistics
 using Distributions
-using LinearAlgebra
 using DocStringExtensions
+using LinearAlgebra
+using Printf
 using Random
+using Statistics
 
 using AbstractMCMC
 using MCMCChains
@@ -359,28 +360,26 @@ compatible with previous implementation.
 function MCMCWrapper(
     obs_sample::Vector{FT},
     obs_noise_cov::Array{FT, 2},
+    gp::GaussianProcess,
     prior::ParameterDistribution;
     step::FT,
     param_init::Vector{FT},
     max_iter::Union{IT, Nothing}=nothing,
     burnin::IT,
-    standardize=false,
     norm_factor::Union{Array{FT, 1}, Nothing}=nothing,
-    svd = true,
+    svd = false,
     truncate_svd=1.0
 ) where {FT<:AbstractFloat, IT<:Integer}
-    if standardize
-        obs_sample, obs_noise_cov = standardize_obs(
-            obs_sample, obs_noise_cov;
-            norm_factor=norm_factor, svd=svd, truncate_svd=truncate_svd
-        )
-    end
+    obs_sample, obs_noise_cov = standardize_obs(
+        obs_sample, obs_noise_cov;
+        norm_factor=norm_factor, svd=svd, truncate_svd=truncate_svd
+    )
     model = GPDensityModel(gp, obs_sample)
     sampler = VariableStepMHSampler(get_cov(prior), step)
     return MCMCWrapper(
         model, sampler, max_iter, (;
         :init_params => deepcopy(param_init),
-        :param_names => get_name(mcmc.prior),
+        :param_names => get_name(prior),
         :discard_initial => burnin,
         :chain_type => MCMCChains.Chains
     ))
@@ -412,7 +411,7 @@ to generate proposals. Throws an error for Samplers/Proposals without a `stepsiz
 """
 function set_stepsize!(mcmc::MCMCWrapper, new_step)
     if hasproperty(mcmc.sampler, :proposal)
-        if hasproperty(samp.proposal, :stepsize)
+        if hasproperty(mcmc.sampler.proposal, :stepsize)
             mcmc.sampler.proposal.stepsize = new_step
         else
             throw("Proposal is of unrecognized type: $(typeof(mcmc.sampler.proposal)).")
@@ -477,7 +476,7 @@ function AbstractMCMC.sample(
 end
 
 # ------------------------------------------------------------------------------------------
-# still to be updated
+# Search for a MCMC stepsize that yields a decent MH acceptance rate
 
 function accept_ratio(chain::MCMCChains.Chains)
     if :accept in names(chain, :internals)
@@ -487,65 +486,50 @@ function accept_ratio(chain::MCMCChains.Chains)
     end
 end
 
-function find_mcmc_step!(mcmc_test::MCMCWrapper, gp::GaussianProcess{FT}; max_iter=2000) where {FT}
-    step = mcmc_test.step[1]
-    mcmc_accept = false
+function _find_mcmc_step_log(mcmc::MCMCWrapper)
+    str_ = @sprintf "%d starting params:" 0
+    for p in zip(mcmc.sample_kwargs.param_names, mcmc.sample_kwargs.init_params)
+        str_ *= @sprintf " %s: %.3g" p[1] p[2]
+    end
+    println(str_)
+    flust(stdout)
+end
+
+function _find_mcmc_step_log(it, step, acc_ratio, chain::MCMCChains.Chains)
+    str_ = @sprintf "%d step: %.3g acc rate: %.3g\n\tparams:" it step acc_ratio
+    for p in pairs(get(chain; section=:parameters)) # can't map() over Pairs
+        str_ *= @sprintf " %s: %.3g" p.first last(p.second)
+    end
+    println(str_)
+    flust(stdout)
+end
+
+function find_mcmc_step!(mcmc::MCMCWrapper; N = 2000, max_iter = 20)
     doubled = false
     halved = false
-    countmcmc = 0
-
-    println("Begin step size search")
-    println("iteration 0; current parameters ", mcmc_test.param')
+    _find_mcmc_step_log(mcmc)
     flush(stdout)
-    it = 0
-    local acc_ratio
-    while mcmc_accept == false
-
-        param = reshape(mcmc_test.param, :, 1)
-        gp_pred, gp_predvar = predict(gp, param )
-        if ndims(gp_predvar[1]) != 0
-            mcmc_sample!(mcmc_test, vec(gp_pred), diag(gp_predvar[1]))
+    for it = 1:max_iter
+        step = get_stepsize(mcmc)
+        trial_chain = sample(mcmc, N)
+        acc_ratio = accept_ratio(trial_chain)
+        _find_mcmc_step_log(it, step, acc_ratio, trial_chain)
+        if doubled && halved
+            set_stepsize!(mcmc, 0.75 * step)
+            doubled = false
+            halved = false
+        elseif acc_ratio < 0.15
+            set_stepsize!(mcmc, 0.5 * step)
+            halved = true
+        elseif acc_ratio > 0.35
+            set_stepsize!(mcmc, 2.0 * step)
+            doubled = true
         else
-            mcmc_sample!(mcmc_test, vec(gp_pred), vec(gp_predvar))
+            @printf "Set sampler to new stepsize: %.3g\n" step
+            return step
         end
-        it += 1
-        if it % max_iter == 0
-            countmcmc += 1
-            acc_ratio = accept_ratio(mcmc_test)
-            println("iteration ", it, "; acceptance rate = ", acc_ratio,
-                    ", current parameters ", param)
-            flush(stdout)
-            if countmcmc == 20
-                println("failed to choose suitable stepsize in ", countmcmc,
-                        "iterations")
-                exit()
-            end
-            it = 0
-            if doubled && halved
-                step *= 0.75
-                reset_with_step!(mcmc_test, step)
-                doubled = false
-                halved = false
-            elseif acc_ratio < 0.15
-                step *= 0.5
-                reset_with_step!(mcmc_test, step)
-                halved = true
-            elseif acc_ratio>0.35
-                step *= 2.0
-                reset_with_step!(mcmc_test, step)
-                doubled = true
-            else
-                mcmc_accept = true
-            end
-            if mcmc_accept == false
-                println("new step size: ", step)
-                flush(stdout)
-            end
-        end
-
     end
-
-    return mcmc_test.step[1]
+    throw("Failed to choose suitable stepsize in $(max_iter) iterations.")
 end
 
 function get_posterior(mcmc::MCMCWrapper)
