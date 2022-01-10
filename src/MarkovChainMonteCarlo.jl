@@ -27,8 +27,7 @@ export
     set_stepsize!,
     accept_ratio,
     find_mcmc_step!,
-    get_posterior,
-    sample_posterior!
+    get_posterior
 
 # ------------------------------------------------------------------------------------------
 # Define Gaussian process model
@@ -321,13 +320,15 @@ end
 """
     MCMCWrapper
 
-Top-level object to hold the `AdvancedMH.DensityModel` and Sampler objects, as well as 
+Top-level object to hold the prior, DensityModel and Sampler objects, as well as 
 arguments to be passed to the sampling function.
 
 # Fields
 $(DocStringExtensions.FIELDS)
 """
 struct MCMCWrapper
+    "`EnsembleKalmanProcess.ParameterDistribution` object describing the prior distribution on parameter values."
+    prior::ParameterDistribution
     "`AdvancedMH.DensityModel` object, used to generate log-likelihood of data|params."
     model::AbstractMCMC.AbstractModel
     "Object describing a MCMCWrapper sampling algorithm and its settings."
@@ -377,7 +378,7 @@ function MCMCWrapper(
     model = GPDensityModel(gp, obs_sample)
     sampler = VariableStepMHSampler(get_cov(prior), step)
     return MCMCWrapper(
-        model, sampler, max_iter, (;
+        prior, model, sampler, max_iter, (;
         :init_params => deepcopy(param_init),
         :param_names => get_name(prior),
         :discard_initial => burnin,
@@ -532,34 +533,29 @@ function find_mcmc_step!(mcmc::MCMCWrapper; N = 2000, max_iter = 20)
     throw("Failed to choose suitable stepsize in $(max_iter) iterations.")
 end
 
-function get_posterior(mcmc::MCMCWrapper)
-    #Return a parameter distributions object
-    parameter_slices = batch(mcmc.prior)
-    posterior_samples = [Samples(mcmc.posterior[slice,mcmc.burnin+1:end]) for slice in parameter_slices]
-    flattened_constraints = get_all_constraints(mcmc.prior)
-    parameter_constraints = [flattened_constraints[slice] for slice in parameter_slices] #live in same space as prior
-    parameter_names = get_name(mcmc.prior) #the same parameters as in prior
-    posterior_distribution = ParameterDistribution(posterior_samples, parameter_constraints, parameter_names)
+"""
+    get_posterior
+
+Return a `ParameterDistribution` object corresponding to the empirical distribution of the 
+MC samples.
+
+NB: multiple MCMC.Chains not implemented.
+"""
+function get_posterior(mcmc::MCMCWrapper, chain::MCMCChains.Chains)
+    p_chain = Chains(chain, :parameters) # discard internal/diagnostic data; params only
+    p_names = map(string, names(p_chain))
+    p_slices = batch(mcmc.prior)
+    flat_constraints = get_all_constraints(mcmc.prior)
+    # live in same space as prior
+    p_constraints = [flat_constraints[slice] for slice in p_slices]
+    
+    # Cast data in chain to a ParameterDistribution object. Data layout in Chain is an
+    # (N_samples x n_params x n_chains) AxisArray, so need transpose for Samples, which
+    # stores samples in columns.
+    posterior_samples = [Samples(transpose(Array(p_chain[:,slice,1]))) for slice in p_slices]
+    posterior_distribution = ParameterDistribution(posterior_samples, p_constraints, p_names)
     return posterior_distribution
     
-end
-
-function sample_posterior!(mcmc::MCMCWrapper,
-                           gp::GaussianProcess{FT},
-                           max_iter::IT) where {FT,IT<:Int}
-
-    for mcmcit in 1:max_iter
-        param = reshape(mcmc.param, :, 1)
-        # test predictions (param is 1 x N_parameters)
-        gp_pred, gp_predvar = predict(gp, param)
-
-        if ndims(gp_predvar[1]) != 0
-            mcmc_sample!(mcmc, vec(gp_pred), diag(gp_predvar[1]))
-        else
-            mcmc_sample!(mcmc, vec(gp_pred), vec(gp_predvar))
-        end
-
-    end
 end
 
 end # module MarkovChainMonteCarlo
