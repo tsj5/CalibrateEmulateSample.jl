@@ -22,6 +22,8 @@ export
     GPDensityModel,
     VariableStepProposal,
     VariableStepMHSampler,
+    MCMCProtocol,
+    GaussianProcessRWSampling,
     MCMCWrapper,
     get_stepsize,
     set_stepsize!,
@@ -292,6 +294,45 @@ end
 # Top-level object to contain model and sampler (but not state)
 
 """
+    MCMCProtocol
+
+Type used to dispatch different methods of the [`MCMCWrapper`](@ref) constructor, 
+corresponding to different choices of DensityModel and Sampler.
+"""
+abstract type MCMCProtocol end
+
+"""
+    GaussianProcessRWSampling
+    
+[`MCMCProtocol`](@ref) which uses [`GPDensityModel`](@ref) for the DensityModel (likelihood)
+and [`VariableStepProposal`](@ref) for the sampler (generator of proposals for
+Metropolis-Hastings).
+"""
+struct GaussianProcessRWSampling <: MCMCProtocol end
+
+"""
+    MCMCWrapper
+
+Top-level object to hold the prior, DensityModel and Sampler objects, as well as 
+arguments to be passed to the sampling function.
+
+# Fields
+$(DocStringExtensions.FIELDS)
+"""
+struct MCMCWrapper
+    "`EnsembleKalmanProcess.ParameterDistribution` object describing the prior distribution on parameter values."
+    prior::ParameterDistribution
+    "`AdvancedMH.DensityModel` object, used to generate log-likelihood of data|params."
+    model::AbstractMCMC.AbstractModel
+    "Object describing a MCMCWrapper sampling algorithm and its settings."
+    sampler::AbstractMCMC.AbstractSampler
+    "Number of steps to sample in the MC."
+    N::Union{Int64, Nothing}
+    "NamedTuple of other arguments to be passed to `AbstractMCMC.sample()`."
+    sample_kwargs::NamedTuple
+end
+
+"""
     standardize_obs
 
 Logic for decorrelating observational inputs using SVD.
@@ -320,28 +361,6 @@ end
 """
     MCMCWrapper
 
-Top-level object to hold the prior, DensityModel and Sampler objects, as well as 
-arguments to be passed to the sampling function.
-
-# Fields
-$(DocStringExtensions.FIELDS)
-"""
-struct MCMCWrapper
-    "`EnsembleKalmanProcess.ParameterDistribution` object describing the prior distribution on parameter values."
-    prior::ParameterDistribution
-    "`AdvancedMH.DensityModel` object, used to generate log-likelihood of data|params."
-    model::AbstractMCMC.AbstractModel
-    "Object describing a MCMCWrapper sampling algorithm and its settings."
-    sampler::AbstractMCMC.AbstractSampler
-    "Number of steps to sample in the MC."
-    N::Union{Int64, Nothing}
-    "NamedTuple of other arguments to be passed to `AbstractMCMC.sample()`."
-    sample_kwargs::NamedTuple
-end
-
-"""
-    MCMCWrapper
-
 Constructor for [`MCMCWrapper`](@ref) which performs obs standardization and takes keywords 
 compatible with previous implementation.
 
@@ -359,6 +378,7 @@ compatible with previous implementation.
 - `truncate_svd`: Threshold for retaining singular values.
 """
 function MCMCWrapper(
+    ::GaussianProcessRWSampling,
     obs_sample::Vector{FT},
     obs_noise_cov::Array{FT, 2},
     gp::GaussianProcess,
@@ -369,7 +389,8 @@ function MCMCWrapper(
     burnin::IT,
     norm_factor::Union{Array{FT, 1}, Nothing}=nothing,
     svd = false,
-    truncate_svd=1.0
+    truncate_svd=1.0,
+    kwargs...
 ) where {FT<:AbstractFloat, IT<:Integer}
     obs_sample, obs_noise_cov = standardize_obs(
         obs_sample, obs_noise_cov;
@@ -377,13 +398,14 @@ function MCMCWrapper(
     )
     model = GPDensityModel(gp, obs_sample)
     sampler = VariableStepMHSampler(get_cov(prior), step)
-    return MCMCWrapper(
-        prior, model, sampler, max_iter, (;
+    sample_kwargs = (; # defaults
         :init_params => deepcopy(param_init),
         :param_names => get_name(prior),
         :discard_initial => burnin,
         :chain_type => MCMCChains.Chains
-    ))
+    )
+    sample_kwargs = merge(sample_kwargs, kwargs) # override defaults with any explicit values
+    return MCMCWrapper(prior, model, sampler, max_iter, sample_kwargs)
 end
 
 """
