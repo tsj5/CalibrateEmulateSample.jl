@@ -7,226 +7,263 @@ using Statistics
 using Distributions
 using LinearAlgebra
 using DocStringExtensions
+using Random
 
-export MCMC
-export mcmc_sample!
-export accept_ratio
-export reset_with_step!
-export get_posterior
-export find_mcmc_step!
-export sample_posterior!
+using AbstractMCMC
+using MCMCChains
+import AdvancedMH
 
+export 
+    GPDensityModel,
+    VariableStepProposal,
+    VariableStepMHSampler,
+    MCMC,
+    get_stepsize,
+    set_stepsize!,
+    accept_ratio,
+    get_posterior,
+    find_mcmc_step!,
+    sample_posterior!
 
-abstract type AbstractMCMCAlgo end
-struct RandomWalkMetropolis <: AbstractMCMCAlgo end
+# ------------------------------------------------------------------------------------------
+# Define Gaussian process model
 
 """
-    MCMC{FT<:AbstractFloat, IT<:Int}
+    GPDensityModel
 
-Structure to organize MCMC parameters and data
+Factory which constructs `AdvancedMH.DensityModel` objects given a [`GaussianProcess`](@ref).
+The role of the `DensityModel` is to return the log-likelihood of the data (here, as 
+summarized by the Gaussian process) given input model parameters.
+"""
+function GPDensityModel(gp::GaussianProcess{FT}, obs_sample::Vector{FT}) where {FT <: AbstractFloat}
+    # recall predict() written to return multiple `N_samples`: expects input to be a Matrix
+    # with `N_samples` columns. Returned g is likewise a Matrix, and g_cov is a Vector of 
+    # `N_samples` covariance matrices. For MH, N_samples is always 1, so we have to 
+    # reshape()/re-cast input/output. 
+    # transform_to_real = false means we work in the standardized space.
+    return AdvancedMH.DensityModel(
+        function (θ)
+            g, g_cov = GaussianProcessEmulator.predict(gp, reshape(θ,:,1), transform_to_real=false)
+            return logpdf(MvNormal(obs_sample, g_cov[1]), vec(g))
+       end
+    )
+end
+
+# ------------------------------------------------------------------------------------------
+# Extend proposal distribution object to allow for tunable stepsize
+
+"""
+    VariableStepProposal
+
+`AdvancedMH.Proposal` object responsible for generating the random walk steps used for new 
+parameter proposals in the Metropolis-Hastings algorithm. Adds a separately adjustable 
+`stepsize` parameter to the implementation from 
+[AdvancedMH](https://github.com/TuringLang/AdvancedMH.jl).
+
+This is allowed to be mutable, in order to dynamically change the `stepsize`. Since no
+sampler state gets stored here, this choice is made out of convenience, not necessity.
 
 # Fields
 $(DocStringExtensions.FIELDS)
 """
-struct MCMC{FT<:AbstractFloat, IT<:Int}
-    "a single sample from the observations. Can e.g. be picked from an Obs struct using get_obs_sample"
-    obs_sample::Vector{FT}
-    "covariance of the observational noise"
-    obs_noise_cov::Array{FT, 2}
-    "array of length N_parameters with the parameters' prior distributions"
-    prior::ParameterDistribution
-    "MCMC step size"
-    step::Array{FT}
-    "Number of MCMC steps that are considered burnin"
-    burnin::IT
-    "the current parameters"
-    param::Vector{FT}
-    "Array of accepted MCMC parameter samples. The histogram of these samples gives an approximation of the posterior distribution of the parameters. param_dim x n_samples"
-    posterior::Array{FT, 2}
-    "the (current) value of the logarithm of the posterior (= log_likelihood + log_prior of the current parameters)"
-    log_posterior::Array{Union{FT, Nothing}}
-    "iteration/step of the MCMC"
-    iter::Array{IT}
-    "number of accepted proposals"
-    accept::Array{IT}
-    "MCMC algorithm to use - currently implemented: 'rmw' (random walk Metropolis)"
-    algtype::String
+mutable struct VariableStepProposal{issymmetric, P, FT<:AbstractFloat} <: AdvancedMH.Proposal{P}
+    "Distribution from which to draw IID random walk steps. Assumed zero-mean."
+    proposal::P
+    "Scaling factor applied to all samples drawn from `proposal`."
+    stepsize::FT
+end
+
+# Boilerplate from AdvancedMH; 
+# AdvancedMH extends Base.rand to draw from Proposal objects
+const SymmetricVariableStepProposal{P, FT} = VariableStepProposal{true, P, FT}
+VariableStepProposal(proposal, step) = VariableStepProposal{false}(proposal, step)
+function VariableStepProposal{issymmetric}(proposal, step) where {issymmetric}
+    return VariableStepProposal{issymmetric, typeof(proposal), typeof(step)}(proposal, step)
+end
+
+function AdvancedMH.propose(
+    rng::Random.AbstractRNG,
+    proposal::VariableStepProposal{issymmetric, <:Union{Distribution,AbstractArray}, <:AbstractFloat},
+    ::AbstractMCMC.AbstractModel
+) where {issymmetric}
+    return proposal.stepsize * rand(rng, proposal)
+end
+
+function AdvancedMH.propose(
+    rng::Random.AbstractRNG,
+    proposal::VariableStepProposal{issymmetric, <:Union{Distribution,AbstractArray}, <:AbstractFloat},
+    ::AbstractMCMC.AbstractModel,
+    t
+) where {issymmetric}
+    return t + proposal.stepsize * rand(rng, proposal)
+end
+
+# q-factor used in density ratios: this *only* comes into play for samplers that don't obey
+# detailed balance. For `MetropolisHastings` sampling this method isn't used.
+function AdvancedMH.q(
+    proposal::VariableStepProposal{issymmetric, <:Union{Distribution,AbstractArray}, <:AbstractFloat},
+    t,
+    t_cond
+) where {issymmetric}
+    return logpdf(proposal, (t - t_cond) / proposal.stepsize)
 end
 
 """
-    MCMC(obs_sample::Vector{FT},
-            obs_noise_cov::Array{FT, 2},
-            priors::Array{Prior, 1},
-            step::FT,
-            param_init::Vector{FT},
-            max_iter::IT,
-            algtype::String,
-            burnin::IT,
+    VariableStepMHSampler
 
-where max_iter is the number of MCMC steps to perform (e.g., 100_000)
+Constructor for a Metropolis-Hastings sampler that uses the [`VariableStepProposal`](@ref)
+Proposal object.
 
+- `cov` - fixed covariance used to generate multivariate normal RW steps.
+- `stepsize` - MH stepsize, applied as a constant uniform scaling to all samples. 
+"""
+function VariableStepMHSampler(cov::Matrix{FT}, stepsize::FT = 1.0) where {FT<:AbstractFloat}
+    return AdvancedMH.MetropolisHastings(
+        VariableStepProposal{false}(MvNormal(zeros(size(cov)[1]), cov), stepsize)
+    )
+end
+
+# ------------------------------------------------------------------------------------------
+# Record MH accept/reject in Transition object
+
+
+# ------------------------------------------------------------------------------------------
+# Top-level structure
+
+"""
+    standardize_obs
+
+Logic for decorrelating observational inputs using SVD.
+"""
+function standardize_obs(
+    obs_sample::Vector{FT},
+    obs_noise_cov::Array{FT, 2};
+    norm_factor::Union{Array{FT, 1}, Nothing} = nothing,
+    svd = true,
+    truncate_svd = 1.0
+) where {FT}
+    if norm_factor !== nothing
+        obs_sample = obs_sample ./ norm_factor
+        obs_noise_cov = obs_noise_cov ./ (norm_factor .* norm_factor)
+    end
+    # We need to transform obs_sample into the correct space 
+    if svd
+        println("Applying SVD to decorrelating outputs, if not required set svdflag=false")
+        obs_sample, _ = svd_transform(obs_sample, obs_noise_cov; truncate_svd=truncate_svd)
+    else
+        println("Assuming independent outputs.")
+    end
+    return (obs_sample, obs_noise_cov)
+end
+
+"""
+    MCMC
+
+Top-level object to hold the `AdvancedMH.DensityModel` and Sampler objects, as well as 
+arguments to be passed to the sampler.
+
+# Fields
+$(DocStringExtensions.FIELDS)
+"""
+struct MCMC
+    model::AbstractMCMC.AbstractModel
+    sampler::AbstractMCMC.AbstractSampler
+    sample_kwargs::NamedTuple
+end
+
+"""
+    MCMC
+
+Constructor for [`MCMC`](@ref) which performs obs standardization and takes keywords 
+compatible with previous implementation.
+
+- `obs_sample`: A single sample from the observations. Can, e.g., be picked from an Obs 
+  struct using get_obs_sample.
+- `obs_noise_cov`: Covariance of the observational noise.
+- `prior`: array of length `N_parameters` containing the parameters' prior distributions.
+- `step`: MCMC step size.
+- `param_init`: Starting point for MCMC sampling.
+- `max_iter`: Number of MCMC steps to take during sampling.
+- `burnin`: Initial number of MCMC steps to discard (pre-convergence).
+- `standardize`: Whether to use SVD to standardize observations.
+- `norm_factor`: Optional factor by which to rescale observations.
+- `svd`: Whether to use SVD to decorrelate observations.
+- `truncate_svd`: Threshold for retaining singular values.
 """
 function MCMC(
     obs_sample::Vector{FT},
     obs_noise_cov::Array{FT, 2},
-    prior::ParameterDistribution,
+    prior::ParameterDistribution;
     step::FT,
     param_init::Vector{FT},
     max_iter::IT,
-    algtype::String,
-    burnin::IT;
-    svdflag=true,
+    burnin::IT,
     standardize=false,
     norm_factor::Union{Array{FT, 1}, Nothing}=nothing,
-    truncate_svd=1.0) where {FT<:AbstractFloat, IT<:Int}
-
-    
-    param_init_copy = deepcopy(param_init)
-    
-    # Standardize MCMC input?
-    println(obs_sample)
-    println(obs_noise_cov)
+    svd = true,
+    truncate_svd=1.0
+) where {FT<:AbstractFloat, IT<:Integer}
     if standardize
-        obs_sample = obs_sample ./ norm_factor;
-	cov_norm_factor = norm_factor .* norm_factor;
-	obs_noise_cov = obs_noise_cov ./ cov_norm_factor;
+        obs_sample, obs_noise_cov = standardize_obs(
+            obs_sample, obs_noise_cov;
+            norm_factor=norm_factor, svd=svd, truncate_svd=truncate_svd
+        )
     end
-    println(obs_sample)
-    println(obs_noise_cov)
+    model = GPDensityModel(gp, obs_sample)
+    sampler = VariableStepMHSampler(get_cov(prior), step)
+    return MCMC(
+        model, sampler, (;
+        :iter => max_iter,
+        :init_params => deepcopy(param_init),
+        :discard_initial => burnin,
+        :chain_type => MCMCChains.Chains
+    ))
+end
 
-    # We need to transform obs_sample into the correct space 
-    if svdflag
-        println("Applying SVD to decorrelating outputs, if not required set svdflag=false")
-        obs_sample, unused = svd_transform(obs_sample, obs_noise_cov; truncate_svd=truncate_svd)
+"""
+    get_stepsize
+
+Returns the current MH `stepsize`, assuming we're using [`VariableStepProposal`](@ref) to
+generate proposals. Throws an error for Samplers/Proposals without a `stepsize` field.
+"""
+function get_stepsize(mcmc::MCMC)
+    if hasproperty(mcmc.sampler, :proposal)
+        if hasproperty(mcmc.sampler.proposal, :stepsize)
+            return mcmc.sampler.proposal.stepsize
+        else
+            throw("Proposal is of unrecognized type: $(typeof(mcmc.sampler.proposal)).")
+        end
     else
-        println("Assuming independent outputs.")
+        throw("Sampler is of unrecognized type: $(typeof(mcmc.sampler)).")
     end
-    println(obs_sample)
-    
-    # first row is param_init
-    posterior = zeros(length(param_init_copy),max_iter + 1)
-    posterior[:, 1] = param_init_copy
-    param = param_init_copy
-    log_posterior = [nothing]
-    iter = [1]
-    accept = [0]
-    if algtype != "rwm"
-        error("only random walk metropolis 'rwm' is implemented so far")
-    end
-    MCMC{FT,IT}(obs_sample,
-                   obs_noise_cov,
-                   prior,
-                   [step],
-                   burnin,
-                   param,
-                   posterior,
-                   log_posterior,
-                   iter,
-                   accept,
-                   algtype)
 end
 
+"""
+    set_stepsize!
 
-function reset_with_step!(mcmc::MCMC{FT}, step::FT) where {FT}
-    # reset to beginning with new stepsize
-    mcmc.step[1] = step
-    mcmc.log_posterior[1] = nothing
-    mcmc.iter[1] = 1
-    mcmc.accept[1] = 0
-    mcmc.posterior[:,2:end] = zeros(size(mcmc.posterior[:,2:end]))
-    mcmc.param[:] = mcmc.posterior[:, 1]
-end
-
-
-function get_posterior(mcmc::MCMC)
-    #Return a parameter distributions object
-    parameter_slices = batch(mcmc.prior)
-    posterior_samples = [Samples(mcmc.posterior[slice,mcmc.burnin+1:end]) for slice in parameter_slices]
-    flattened_constraints = get_all_constraints(mcmc.prior)
-    parameter_constraints = [flattened_constraints[slice] for slice in parameter_slices] #live in same space as prior
-    parameter_names = get_name(mcmc.prior) #the same parameters as in prior
-    posterior_distribution = ParameterDistribution(posterior_samples, parameter_constraints, parameter_names)
-    return posterior_distribution
-    
-end
-
-function mcmc_sample!(mcmc::MCMC{FT}, g::Vector{FT}, 
-                      gcov::Union{Matrix{FT},Diagonal{FT}}) where {FT}
-    if mcmc.algtype == "rwm"
-        log_posterior = log_likelihood(mcmc, g, gcov) + log_prior(mcmc)
-    end
-
-    if mcmc.log_posterior[1] isa Nothing # do an accept step.
-        mcmc.log_posterior[1] = log_posterior - log(FT(0.5)) # this makes p_accept = 0.5
-    end
-    # Get new parameters by comparing likelihood_current * prior_current to
-    # likelihood_proposal * prior_proposal - either we accept the proposed
-    # parameter or we stay where we are.
-    p_accept = exp(log_posterior - mcmc.log_posterior[1])
-
-    if p_accept > rand(Distributions.Uniform(0, 1))
-        mcmc.posterior[:,1 + mcmc.iter[1]] = mcmc.param
-        mcmc.log_posterior[1] = log_posterior
-        mcmc.accept[1] = mcmc.accept[1] + 1
+Sets the MH `stepsize` to a new value, assuming we're using [`VariableStepProposal`](@ref) 
+to generate proposals. Throws an error for Samplers/Proposals without a `stepsize` field.
+"""
+function set_stepsize!(mcmc::MCMC, new_step)
+    if hasproperty(mcmc.sampler, :proposal)
+        if hasproperty(samp.proposal, :stepsize)
+            mcmc.sampler.proposal.stepsize = new_step
+        else
+            throw("Proposal is of unrecognized type: $(typeof(mcmc.sampler.proposal)).")
+        end
     else
-        mcmc.posterior[:,1 + mcmc.iter[1]] = mcmc.posterior[:,mcmc.iter[1]]
+        throw("Sampler is of unrecognized type: $(typeof(mcmc.sampler)).")
     end
-    mcmc.param[:] = proposal(mcmc)[:]
-    mcmc.iter[1] = mcmc.iter[1] + 1
-
 end
 
-function mcmc_sample!(mcmc::MCMC{FT}, g::Vector{FT}, gvar::Vector{FT}) where {FT}
-    return mcmc_sample!(mcmc, g, Diagonal(gvar))
+# ------------------------------------------------------------------------------------------
+# still to be updated
+
+function accept_ratio(mcmc::MCMC)
+    return mcmc.accept[1] / mcmc.iter[1]
 end
 
-function accept_ratio(mcmc::MCMC{FT}) where {FT}
-    return convert(FT, mcmc.accept[1]) / mcmc.iter[1]
-end
-
-
-function log_likelihood(mcmc::MCMC{FT},
-                        g::Vector{FT},
-                        gcov::Union{Matrix{FT},Diagonal{FT}}) where {FT}
-    log_rho = FT[0]
-    #if gcov == nothing
-    #    diff = g - mcmc.obs_sample
-    #    log_rho[1] = -FT(0.5) * diff' * (mcmc.obs_noise_cov \ diff)
-    #else
-	# det(log(Γ))
-	# Ill-posed numerically for ill-conditioned covariance matrices with det≈0
-        #log_gpfidelity = -FT(0.5) * log(det(Diagonal(gvar))) # = -0.5 * sum(log.(gvar))
-	# Well-posed numerically for ill-conditioned covariance matrices with det≈0
-	#full_cov = Diagonal(gvar)
-	eigs = eigvals(gcov)
-	log_gpfidelity = -FT(0.5) * sum(log.(eigs))
-	# Combine got log_rho
-	diff = g - mcmc.obs_sample
-        log_rho[1] = -FT(0.5) * diff' * (gcov \ diff) + log_gpfidelity
-    #end
-    return log_rho[1]
-end
-
-
-function log_prior(mcmc::MCMC{FT}) where {FT}
-    return get_logpdf(mcmc.prior,mcmc.param)
-end
-
-
-function proposal(mcmc::MCMC)
-
-    proposal_covariance = get_cov(mcmc.prior)
- 
-    if mcmc.algtype == "rwm"
-        prop_dist = MvNormal(zeros(length(mcmc.param)), 
-                             (mcmc.step[1]^2) * proposal_covariance)
-    end
-    sample = mcmc.posterior[:,1 + mcmc.iter[1]] .+ rand(prop_dist)
-    return sample
-end
-
-
-function find_mcmc_step!(mcmc_test::MCMC{FT}, gp::GaussianProcess{FT}; max_iter=2000) where {FT}
+function find_mcmc_step!(mcmc_test::MCMC, gp::GaussianProcess{FT}; max_iter=2000) where {FT}
     step = mcmc_test.step[1]
     mcmc_accept = false
     doubled = false
@@ -287,8 +324,19 @@ function find_mcmc_step!(mcmc_test::MCMC{FT}, gp::GaussianProcess{FT}; max_iter=
     return mcmc_test.step[1]
 end
 
+function get_posterior(mcmc::MCMC)
+    #Return a parameter distributions object
+    parameter_slices = batch(mcmc.prior)
+    posterior_samples = [Samples(mcmc.posterior[slice,mcmc.burnin+1:end]) for slice in parameter_slices]
+    flattened_constraints = get_all_constraints(mcmc.prior)
+    parameter_constraints = [flattened_constraints[slice] for slice in parameter_slices] #live in same space as prior
+    parameter_names = get_name(mcmc.prior) #the same parameters as in prior
+    posterior_distribution = ParameterDistribution(posterior_samples, parameter_constraints, parameter_names)
+    return posterior_distribution
+    
+end
 
-function sample_posterior!(mcmc::MCMC{FT,IT},
+function sample_posterior!(mcmc::MCMC,
                            gp::GaussianProcess{FT},
                            max_iter::IT) where {FT,IT<:Int}
 
