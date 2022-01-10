@@ -13,16 +13,20 @@ using AbstractMCMC
 using MCMCChains
 import AdvancedMH
 
+# Reexport sample()
+using AbstractMCMC: sample
+export sample
+
 export 
     GPDensityModel,
     VariableStepProposal,
     VariableStepMHSampler,
-    MCMC,
+    MCMCWrapper,
     get_stepsize,
     set_stepsize!,
     accept_ratio,
-    get_posterior,
     find_mcmc_step!,
+    get_posterior,
     sample_posterior!
 
 # ------------------------------------------------------------------------------------------
@@ -285,7 +289,7 @@ function AbstractMCMC.bundle_samples(
 end
 
 # ------------------------------------------------------------------------------------------
-# Top-level structure
+# Top-level object to contain model and sampler (but not state)
 
 """
     standardize_obs
@@ -314,46 +318,51 @@ function standardize_obs(
 end
 
 """
-    MCMC
+    MCMCWrapper
 
 Top-level object to hold the `AdvancedMH.DensityModel` and Sampler objects, as well as 
-arguments to be passed to the sampler.
+arguments to be passed to the sampling function.
 
 # Fields
 $(DocStringExtensions.FIELDS)
 """
-struct MCMC
+struct MCMCWrapper
+    "`AdvancedMH.DensityModel` object, used to generate log-likelihood of data|params."
     model::AbstractMCMC.AbstractModel
+    "Object describing a MCMCWrapper sampling algorithm and its settings."
     sampler::AbstractMCMC.AbstractSampler
+    "Number of steps to sample in the MC."
+    N::Union{Int64, Nothing}
+    "NamedTuple of other arguments to be passed to `AbstractMCMC.sample()`."
     sample_kwargs::NamedTuple
 end
 
 """
-    MCMC
+    MCMCWrapper
 
-Constructor for [`MCMC`](@ref) which performs obs standardization and takes keywords 
+Constructor for [`MCMCWrapper`](@ref) which performs obs standardization and takes keywords 
 compatible with previous implementation.
 
 - `obs_sample`: A single sample from the observations. Can, e.g., be picked from an Obs 
   struct using get_obs_sample.
 - `obs_noise_cov`: Covariance of the observational noise.
 - `prior`: array of length `N_parameters` containing the parameters' prior distributions.
-- `step`: MCMC step size.
-- `param_init`: Starting point for MCMC sampling.
-- `max_iter`: Number of MCMC steps to take during sampling.
-- `burnin`: Initial number of MCMC steps to discard (pre-convergence).
+- `step`: MCMCWrapper step size.
+- `param_init`: Starting point for MCMCWrapper sampling.
+- `max_iter`: Number of MCMCWrapper steps to take during sampling.
+- `burnin`: Initial number of MCMCWrapper steps to discard (pre-convergence).
 - `standardize`: Whether to use SVD to standardize observations.
 - `norm_factor`: Optional factor by which to rescale observations.
 - `svd`: Whether to use SVD to decorrelate observations.
 - `truncate_svd`: Threshold for retaining singular values.
 """
-function MCMC(
+function MCMCWrapper(
     obs_sample::Vector{FT},
     obs_noise_cov::Array{FT, 2},
     prior::ParameterDistribution;
     step::FT,
     param_init::Vector{FT},
-    max_iter::IT,
+    max_iter::Union{IT, Nothing}=nothing,
     burnin::IT,
     standardize=false,
     norm_factor::Union{Array{FT, 1}, Nothing}=nothing,
@@ -368,10 +377,10 @@ function MCMC(
     end
     model = GPDensityModel(gp, obs_sample)
     sampler = VariableStepMHSampler(get_cov(prior), step)
-    return MCMC(
-        model, sampler, (;
-        :iter => max_iter,
+    return MCMCWrapper(
+        model, sampler, max_iter, (;
         :init_params => deepcopy(param_init),
+        :param_names => get_name(mcmc.prior),
         :discard_initial => burnin,
         :chain_type => MCMCChains.Chains
     ))
@@ -383,7 +392,7 @@ end
 Returns the current MH `stepsize`, assuming we're using [`VariableStepProposal`](@ref) to
 generate proposals. Throws an error for Samplers/Proposals without a `stepsize` field.
 """
-function get_stepsize(mcmc::MCMC)
+function get_stepsize(mcmc::MCMCWrapper)
     if hasproperty(mcmc.sampler, :proposal)
         if hasproperty(mcmc.sampler.proposal, :stepsize)
             return mcmc.sampler.proposal.stepsize
@@ -401,7 +410,7 @@ end
 Sets the MH `stepsize` to a new value, assuming we're using [`VariableStepProposal`](@ref) 
 to generate proposals. Throws an error for Samplers/Proposals without a `stepsize` field.
 """
-function set_stepsize!(mcmc::MCMC, new_step)
+function set_stepsize!(mcmc::MCMCWrapper, new_step)
     if hasproperty(mcmc.sampler, :proposal)
         if hasproperty(samp.proposal, :stepsize)
             mcmc.sampler.proposal.stepsize = new_step
@@ -411,6 +420,60 @@ function set_stepsize!(mcmc::MCMC, new_step)
     else
         throw("Sampler is of unrecognized type: $(typeof(mcmc.sampler)).")
     end
+end
+
+# ------------------------------------------------------------------------------------------
+# Define new methods extending AbstractMCMC.sample() using the MCMCWrapper object defined above.
+
+# use default rng if none given
+function AbstractMCMC.sample(mcmc::MCMCWrapper, args...; kwargs...)
+    return AbstractMCMC.sample(Random.GLOBAL_RNG, mcmc, args...; kwargs...)
+end
+
+# vanilla case
+function AbstractMCMC.sample(
+    rng::Random.AbstractRNG,
+    mcmc::MCMCWrapper,
+    N::Union{Integer, Nothing} = nothing;
+    kwargs...
+)
+    if N === nothing
+        N = mcmc.N
+    end
+    if N === nothing || N < 0
+        throw("Misspecified number of steps: $(N)")
+    end
+    # explicit function kwargs override what's in mcmc
+    kwargs = merge(mcmc.sample_kwargs, NamedTuple(kwargs))
+    return AbstractMCMC.mcmcsample(rng, mcmc.model, mcmc.sampler, N; kwargs...)
+end
+
+# case where we pass an isdone() Function for early termination
+function AbstractMCMC.sample(
+    rng::Random.AbstractRNG,
+    model::AbstractModel,
+    sampler::AbstractSampler,
+    isdone;
+    kwargs...
+)
+    # explicit function kwargs override what's in mcmc
+    kwargs = merge(mcmc.sample_kwargs, NamedTuple(kwargs))
+    return AbstractMCMC.mcmcsample(rng, model, sampler, isdone; kwargs...)
+end
+
+# parallel case
+function AbstractMCMC.sample(
+    rng::Random.AbstractRNG,
+    model::AbstractModel,
+    sampler::AbstractSampler,
+    parallel::AbstractMCMCEnsemble,
+    N::Integer,
+    nchains::Integer;
+    kwargs...
+)
+    # explicit function kwargs override what's in mcmc
+    kwargs = merge(mcmc.sample_kwargs, NamedTuple(kwargs))
+    return AbstractMCMC.mcmcsample(rng, mcmc.model, mcmc.sampler, parallel, N, nchains; kwargs...)
 end
 
 # ------------------------------------------------------------------------------------------
@@ -424,7 +487,7 @@ function accept_ratio(chain::MCMCChains.Chains)
     end
 end
 
-function find_mcmc_step!(mcmc_test::MCMC, gp::GaussianProcess{FT}; max_iter=2000) where {FT}
+function find_mcmc_step!(mcmc_test::MCMCWrapper, gp::GaussianProcess{FT}; max_iter=2000) where {FT}
     step = mcmc_test.step[1]
     mcmc_accept = false
     doubled = false
@@ -485,7 +548,7 @@ function find_mcmc_step!(mcmc_test::MCMC, gp::GaussianProcess{FT}; max_iter=2000
     return mcmc_test.step[1]
 end
 
-function get_posterior(mcmc::MCMC)
+function get_posterior(mcmc::MCMCWrapper)
     #Return a parameter distributions object
     parameter_slices = batch(mcmc.prior)
     posterior_samples = [Samples(mcmc.posterior[slice,mcmc.burnin+1:end]) for slice in parameter_slices]
@@ -497,7 +560,7 @@ function get_posterior(mcmc::MCMC)
     
 end
 
-function sample_posterior!(mcmc::MCMC,
+function sample_posterior!(mcmc::MCMCWrapper,
                            gp::GaussianProcess{FT},
                            max_iter::IT) where {FT,IT<:Int}
 
