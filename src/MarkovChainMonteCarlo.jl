@@ -37,20 +37,26 @@ export
 """
     GPDensityModel
 
-Factory which constructs `AdvancedMH.DensityModel` objects given a [`GaussianProcess`](@ref).
-The role of the `DensityModel` is to return the log-likelihood of the data (here, as 
-summarized by the Gaussian process) given input model parameters.
+Factory which constructs `AdvancedMH.DensityModel` objects given a set of prior 
+distributions on the model parameters and a [`GaussianProcess`](@ref), which encodes the 
+log-likelihood of the data given parameters. Together this yields the log density we're 
+attempting to sample from with the MCMC, which is the role of the `DensityModel` class in 
+the `AbstractMCMC` interface.
 """
-function GPDensityModel(gp::GaussianProcess{FT}, obs_sample::Vector{FT}) where {FT <: AbstractFloat}
+function GPDensityModel(
+    prior::ParameterDistribution,
+    gp::GaussianProcess{FT}, 
+    obs_sample::Vector{FT}
+) where {FT <: AbstractFloat}
     # recall predict() written to return multiple `N_samples`: expects input to be a Matrix
     # with `N_samples` columns. Returned g is likewise a Matrix, and g_cov is a Vector of 
     # `N_samples` covariance matrices. For MH, N_samples is always 1, so we have to 
     # reshape()/re-cast input/output. 
     # transform_to_real = false means we work in the standardized space.
     return AdvancedMH.DensityModel(
-        function (θ)
+        function (θ) # θ: dummy variable -- model params we evaluate at
             g, g_cov = GaussianProcessEmulator.predict(gp, reshape(θ,:,1), transform_to_real=false)
-            return logpdf(MvNormal(obs_sample, g_cov[1]), vec(g))
+            return logpdf(MvNormal(obs_sample, g_cov[1]), vec(g)) + get_logpdf(prior, θ)
        end
     )
 end
@@ -304,9 +310,9 @@ abstract type MCMCProtocol end
 """
     GaussianProcessRWSampling
     
-[`MCMCProtocol`](@ref) which uses [`GPDensityModel`](@ref) for the DensityModel (likelihood)
-and [`VariableStepProposal`](@ref) for the sampler (generator of proposals for
-Metropolis-Hastings).
+[`MCMCProtocol`](@ref) which uses [`GPDensityModel`](@ref) for the DensityModel (here, 
+Gaussian process likelihood \\* prior) and [`VariableStepProposal`](@ref) for the sampler 
+(generator of proposals for Metropolis-Hastings).
 """
 struct GaussianProcessRWSampling <: MCMCProtocol end
 
@@ -322,7 +328,7 @@ $(DocStringExtensions.FIELDS)
 struct MCMCWrapper
     "`EnsembleKalmanProcess.ParameterDistribution` object describing the prior distribution on parameter values."
     prior::ParameterDistribution
-    "`AdvancedMH.DensityModel` object, used to generate log-likelihood of data|params."
+    "`AdvancedMH.DensityModel` object, used to evaluate the density being sampled from."
     model::AbstractMCMC.AbstractModel
     "Object describing a MCMCWrapper sampling algorithm and its settings."
     sampler::AbstractMCMC.AbstractSampler
@@ -396,7 +402,7 @@ function MCMCWrapper(
         obs_sample, obs_noise_cov;
         norm_factor=norm_factor, svd=svd, truncate_svd=truncate_svd
     )
-    model = GPDensityModel(gp, obs_sample)
+    model = GPDensityModel(prior, gp, obs_sample)
     sampler = VariableStepMHSampler(get_cov(prior), step)
     sample_kwargs = (; # defaults
         :init_params => deepcopy(param_init),
