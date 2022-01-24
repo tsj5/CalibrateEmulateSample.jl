@@ -1,6 +1,6 @@
 module MarkovChainMonteCarlo
 
-using ..GaussianProcessEmulator
+using ..Emulators
 using ..ParameterDistributionStorage
 
 using Distributions
@@ -357,7 +357,7 @@ function standardize_obs(
     # We need to transform obs_sample into the correct space 
     if svd
         println("Applying SVD to decorrelating outputs, if not required set svdflag=false")
-        obs_sample, _ = svd_transform(obs_sample, obs_noise_cov; truncate_svd=truncate_svd)
+        obs_sample, _ = Emulators.svd_transform(obs_sample, obs_noise_cov; truncate_svd=truncate_svd)
     else
         println("Assuming independent outputs.")
     end

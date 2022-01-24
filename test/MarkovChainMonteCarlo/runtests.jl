@@ -6,10 +6,10 @@ using Test
 
 using CalibrateEmulateSample.MarkovChainMonteCarlo
 using CalibrateEmulateSample.ParameterDistributionStorage
-using CalibrateEmulateSample.GaussianProcessEmulator
+using CalibrateEmulateSample.Emulators
 using CalibrateEmulateSample.DataStorage
 
-function test_gp_data(; rng_seed = 41, n = 20, var_y = 0.05, rest...)
+function test_data(; rng_seed = 41, n = 40, var_y = 0.05, rest...)
     # Seed for pseudo-random number generator
     Random.seed!(rng_seed)
     # We need a GaussianProcess to run MarkovChainMonteCarlo, so let's reconstruct the one 
@@ -22,7 +22,7 @@ function test_gp_data(; rng_seed = 41, n = 20, var_y = 0.05, rest...)
     return y, σ2_y, PairedDataContainer(x, y, data_are_columns=true)
 end
 
-function test_gp_prior()
+function test_prior()
     ### Define prior
     umin = -1.0
     umax = 6.0
@@ -33,38 +33,47 @@ function test_gp_prior()
     return ParameterDistribution(prior_dist, prior_constraint, prior_name)
 end
 
-function test_gp_1(y, σ2_y, iopairs::PairedDataContainer)
+function test_em_gp_1(y, σ2_y, iopairs::PairedDataContainer; norm_factor = nothing)
     gppackage = GPJL()
     pred_type = YType()
     # Construct kernel:
     # Squared exponential kernel (note that hyperparameters are on log scale)
     # with observational noise
     GPkernel = SE(log(1.0), log(1.0))
-    gp = GaussianProcess(iopairs, gppackage;
-                         GPkernel=GPkernel, obs_noise_cov=σ2_y, normalized=false, 
-                         noise_learn=true, prediction_type=pred_type
-                        )
-    return gp
+    gp = GaussianProcess(
+        gppackage;
+        kernel=GPkernel, noise_learn=true, prediction_type=pred_type
+    ) 
+    em = Emulator(
+        gp, iopairs;
+        obs_noise_cov=σ2_y, normalize_inputs=false, 
+        standardize_outputs=false, standardize_outputs_factors=norm_factor, truncate_svd=1.0
+    )
+    Emulators.optimize_hyperparameters!(em)
+    return em
 end
 
-function test_gp_2(y, σ2_y, iopairs::PairedDataContainer; norm_factor = nothing)
+function test_em_gp_2(y, σ2_y, iopairs::PairedDataContainer; norm_factor = nothing)
     gppackage = GPJL()
     pred_type = YType()
     # Construct kernel:
     # Squared exponential kernel (note that hyperparameters are on log scale)
     # with observational noise
     GPkernel = SE(log(1.0), log(1.0))
-    # norm_factor = 10.0
-    # norm_factor = fill(norm_factor, size(y[:,1])) # must be size of output dim
-    gp = GaussianProcess(iopairs, gppackage; 
-                         GPkernel=GPkernel, obs_noise_cov=σ2_y, normalized=false, 
-                         noise_learn=true, standardize=true, truncate_svd=0.9, 
-                         prediction_type=pred_type, norm_factor=norm_factor
-                        ) 
-    return gp
+    gp = GaussianProcess(
+        gppackage;
+        kernel=GPkernel, noise_learn=true, prediction_type=pred_type
+    ) 
+    em = Emulator(
+        gp, iopairs;
+        obs_noise_cov=σ2_y, normalize_inputs=false, 
+        standardize_outputs=true, standardize_outputs_factors=norm_factor, truncate_svd=0.9, 
+    )
+    Emulators.optimize_hyperparameters!(em)
+    return em
 end
 
-function mcmc_gp_test_step(prior:: ParameterDistribution, σ2_y, gp::GaussianProcess;
+function mcmc_test_step(prior:: ParameterDistribution, σ2_y, em::Emulator;
     mcmc_alg = "rwm", obs_sample = 1.0, param_init = 3.0, step = 0.5, norm_factor=nothing
 )
     obs_sample = reshape(collect(obs_sample), 1) # scalar or Vector -> Vector
@@ -73,16 +82,16 @@ function mcmc_gp_test_step(prior:: ParameterDistribution, σ2_y, gp::GaussianPro
     burnin = 0
     step = 0.5 # first guess
     max_iter = 5000
-    mcmc_test = MCMC(obs_sample, σ2_y, prior, step, param_init, max_iter, mcmc_alg, burnin; 
-                     svdflag=true, standardize=false, truncate_svd=1.0, 
-                     norm_factor=nothing
-                    )
-    new_step = find_mcmc_step!(mcmc_test, gp)
+    mcmc_test = MCMC(obs_sample, σ2_y, prior, step, param_init, max_iter, 
+                        mcmc_alg, burnin; svdflag=true, standardize=false,
+            truncate_svd=1.0, norm_factor=norm_factor)
+    new_step = find_mcmc_step!(mcmc_test, em)
     println("####", new_step)
     return new_step
 end
 
-function mcmc_gp_test_template(prior:: ParameterDistribution, σ2_y, gp::GaussianProcess;
+function mcmc_test_template(
+    prior:: ParameterDistribution, σ2_y, em::Emulator;
     mcmc_alg = "rwm", obs_sample = 1.0, param_init = 3.0, step = 0.5, norm_factor=nothing
 )
     obs_sample = reshape(collect(obs_sample), 1) # scalar or Vector -> Vector
@@ -91,10 +100,10 @@ function mcmc_gp_test_template(prior:: ParameterDistribution, σ2_y, gp::Gaussia
     burnin = 1000
     max_iter = 100_000
     # Now begin the actual MCMC
-    mcmc = MCMC(obs_sample, σ2_y, prior, step, param_init, max_iter, mcmc_alg, burnin; 
-                svdflag=true, standardize=false, truncate_svd=1.0, norm_factor=norm_factor
-               )
-    sample_posterior!(mcmc, gp, max_iter)
+    mcmc = MCMC(obs_sample, σ2_y, prior, step, param_init, max_iter, 
+                   mcmc_alg, burnin; svdflag=true, standardize=false,
+                   truncate_svd=1.0, norm_factor=norm_factor)
+    sample_posterior!(mcmc, em, max_iter)
     posterior_distribution = get_posterior(mcmc)      
     #post_mean = mean(posterior, dims=1)[1]
     posterior_mean = get_mean(posterior_distribution)
@@ -112,8 +121,8 @@ function mcmc_gp_test_template(prior:: ParameterDistribution, σ2_y, gp::Gaussia
     return posterior_mean[1]
 end
 
-function mcmc_gp_standardization_test_template(prior:: ParameterDistribution, σ2_y, 
-    gp::GaussianProcess;
+function mcmc_standardization_test_template(
+    prior:: ParameterDistribution, σ2_y, em::Emulator;
     mcmc_alg = "rwm", obs_sample = 1.0, param_init = 3.0, step = 0.5, norm_factor=nothing
 )
     obs_sample = reshape(collect(obs_sample), 1) # scalar or Vector -> Vector
@@ -130,33 +139,57 @@ function mcmc_gp_standardization_test_template(prior:: ParameterDistribution, σ
     mcmc = MCMC(obs_sample, σ2_y, prior, step, param_init, max_iter, mcmc_alg, burnin; 
                 svdflag=true, standardize=false, truncate_svd=1.0, norm_factor=norm_factor
                )
-    sample_posterior!(mcmc, gp, max_iter)
+    sample_posterior!(mcmc, em, max_iter)
     posterior_mean = get_mean(get_posterior(mcmc))
     return posterior_mean[1]
 end
 
+@testset "MarkovChainMonteCarlo" begin
+    @testset "GP & rwm" begin
+        prior = test_prior()
+        y, σ2_y, iopairs = test_data(; rng_seed = 456, n = 20, var_y = 0.05)
+        em = test_em_gp_1(y, σ2_y, iopairs)
+        mcmc_params = Dict(:mcmc_alg => "rwm", :obs_sample => 1.0, :param_init => 3.0, 
+            :step => 0.5, :norm_factor=> nothing)
 
-@testset "MarkovChainMonteCarlo: GP & rwm" begin
-    prior = test_gp_prior()
-    y, σ2_y, iopairs = test_gp_data(; rng_seed = 41, n = 20, var_y = 0.05)
-    gp = test_gp_1(y, σ2_y, iopairs)
-    mcmc_params = Dict(:mcmc_alg => "rwm", :obs_sample => 1.0, :param_init => 3.0, 
-        :step => 0.5, :norm_factor=> nothing)
+        new_step = mcmc_test_step(prior, σ2_y, em; mcmc_params...)
+        @test isapprox(new_step, 1.0; atol=0.1)
 
-    new_step = mcmc_gp_test_step(prior, σ2_y, gp; mcmc_params...)
-    @test isapprox(new_step, 1.0; atol=4e-1)
+        posterior_mean_1 = mcmc_test_template(prior, σ2_y, em; mcmc_params...)
+        # difference between mean_1 and ground truth comes from MCMC convergence and GP sampling
+        @test isapprox(posterior_mean_1, π/2; atol=4e-1)
 
-    posterior_mean_1 = mcmc_gp_test_template(prior, σ2_y, gp; mcmc_params...)
-    # difference between mean_1 and ground truth comes from MCMC convergence and GP sampling
-    @test isapprox(posterior_mean_1, π/2; atol=4e-1)
+        norm_factor = 10.0
+        norm_factor = fill(norm_factor, size(y[:,1])) # must be size of output dim
+        em = test_em_gp_2(y, σ2_y, iopairs; norm_factor=norm_factor)
+        posterior_mean_2 = mcmc_standardization_test_template(prior, σ2_y, em; 
+            mcmc_params..., norm_factor=norm_factor)
 
-    norm_factor = 10.0
-    norm_factor = fill(norm_factor, size(y[:,1])) # must be size of output dim
-    gp = test_gp_2(y, σ2_y, iopairs; norm_factor=norm_factor)
-    println("####", norm_factor)
-    posterior_mean_2 = mcmc_gp_standardization_test_template(prior, σ2_y, gp; 
-        mcmc_params..., norm_factor=norm_factor)
+        # difference between mean_1 and mean_2 only from MCMC convergence
+        @test isapprox(posterior_mean_2, posterior_mean_1; atol=0.1)
+    end
 
-    # difference between mean_1 and mean_2 only from MCMC convergence
-    @test isapprox(posterior_mean_2, posterior_mean_1; atol=0.1)
+    @testset "GP & pCN" begin
+        prior = test_prior()
+        y, σ2_y, iopairs = test_data(; rng_seed = 456, n = 20, var_y = 0.05)
+        em = test_em_gp_1(y, σ2_y, iopairs)
+        mcmc_params = Dict(:mcmc_alg => "pCN", :obs_sample => 1.0, :param_init => 3.0, 
+            :step => 0.5, :norm_factor=> nothing)
+
+        new_step = mcmc_test_step(prior, σ2_y, em; mcmc_params...)
+        @test isapprox(new_step, 0.5; atol=0.1)
+
+        posterior_mean_1 = mcmc_test_template(prior, σ2_y, em; mcmc_params...)
+        # difference between mean_1 and ground truth comes from MCMC convergence and GP sampling
+        @test isapprox(posterior_mean_1, π/2; atol=4e-1)
+
+        norm_factor = 10.0
+        norm_factor = fill(norm_factor, size(y[:,1])) # must be size of output dim
+        em = test_em_gp_2(y, σ2_y, iopairs; norm_factor=norm_factor)
+        posterior_mean_2 = mcmc_standardization_test_template(prior, σ2_y, em; 
+            mcmc_params..., norm_factor=norm_factor)
+
+        # difference between mean_1 and mean_2 only from MCMC convergence
+        @test isapprox(posterior_mean_2, posterior_mean_1; atol=0.1)
+    end
 end
