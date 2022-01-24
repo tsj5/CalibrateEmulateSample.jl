@@ -19,11 +19,11 @@ using AbstractMCMC: sample
 export sample
 
 export 
-    GPDensityModel,
+    EmulatorDensityModel,
     VariableStepProposal,
     VariableStepMHSampler,
     MCMCProtocol,
-    GaussianProcessRWSampling,
+    EmulatorRWSampling,
     MCMCWrapper,
     get_stepsize,
     set_stepsize!,
@@ -32,20 +32,20 @@ export
     get_posterior
 
 # ------------------------------------------------------------------------------------------
-# Define Gaussian process model
+# Use emulated model in sampler
 
 """
-    GPDensityModel
+    EmulatorDensityModel
 
 Factory which constructs `AdvancedMH.DensityModel` objects given a set of prior 
-distributions on the model parameters and a [`GaussianProcess`](@ref), which encodes the 
+distributions on the model parameters and an [`Emulator`](@ref), which encodes the 
 log-likelihood of the data given parameters. Together this yields the log density we're 
 attempting to sample from with the MCMC, which is the role of the `DensityModel` class in 
 the `AbstractMCMC` interface.
 """
-function GPDensityModel(
+function EmulatorDensityModel(
     prior::ParameterDistribution,
-    gp::GaussianProcess{FT}, 
+    em::Emulator{FT}, 
     obs_sample::Vector{FT}
 ) where {FT <: AbstractFloat}
     # recall predict() written to return multiple `N_samples`: expects input to be a Matrix
@@ -55,7 +55,7 @@ function GPDensityModel(
     # transform_to_real = false means we work in the standardized space.
     return AdvancedMH.DensityModel(
         function (θ) # θ: dummy variable -- model params we evaluate at
-            g, g_cov = GaussianProcessEmulator.predict(gp, reshape(θ,:,1), transform_to_real=false)
+            g, g_cov = Emulators.predict(em, reshape(θ,:,1), transform_to_real=false)
             return logpdf(MvNormal(obs_sample, g_cov[1]), vec(g)) + get_logpdf(prior, θ)
        end
     )
@@ -308,13 +308,13 @@ corresponding to different choices of DensityModel and Sampler.
 abstract type MCMCProtocol end
 
 """
-    GaussianProcessRWSampling
+    EmulatorRWSampling
     
-[`MCMCProtocol`](@ref) which uses [`GPDensityModel`](@ref) for the DensityModel (here, 
-Gaussian process likelihood \\* prior) and [`VariableStepProposal`](@ref) for the sampler 
+[`MCMCProtocol`](@ref) which uses [`EmulatorDensityModel`](@ref) for the DensityModel (here, 
+emulated likelihood \\* prior) and [`VariableStepProposal`](@ref) for the sampler 
 (generator of proposals for Metropolis-Hastings).
 """
-struct GaussianProcessRWSampling <: MCMCProtocol end
+struct EmulatorRWSampling <: MCMCProtocol end
 
 """
     MCMCWrapper
@@ -384,10 +384,10 @@ compatible with previous implementation.
 - `truncate_svd`: Threshold for retaining singular values.
 """
 function MCMCWrapper(
-    ::GaussianProcessRWSampling,
+    ::EmulatorRWSampling,
     obs_sample::Vector{FT},
     obs_noise_cov::Array{FT, 2},
-    gp::GaussianProcess,
+    em::Emulator,
     prior::ParameterDistribution;
     step::FT,
     param_init::Vector{FT},
@@ -402,7 +402,7 @@ function MCMCWrapper(
         obs_sample, obs_noise_cov;
         norm_factor=norm_factor, svd=svd, truncate_svd=truncate_svd
     )
-    model = GPDensityModel(prior, gp, obs_sample)
+    model = EmulatorDensityModel(prior, em, obs_sample)
     sampler = VariableStepMHSampler(get_cov(prior), step)
     sample_kwargs = (; # defaults
         :init_params => deepcopy(param_init),
