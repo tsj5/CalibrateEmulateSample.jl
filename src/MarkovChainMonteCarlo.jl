@@ -3,6 +3,7 @@ module MarkovChainMonteCarlo
 using ..Emulators
 using ..ParameterDistributionStorage
 
+import Distributions: sample # Reexport sample()
 using Distributions
 using DocStringExtensions
 using LinearAlgebra
@@ -10,13 +11,10 @@ using Printf
 using Random
 using Statistics
 
-using AbstractMCMC
 using MCMCChains
+import AbstractMCMC: sample # Reexport sample()
+using AbstractMCMC
 import AdvancedMH
-
-# Reexport sample()
-using AbstractMCMC: sample
-export sample
 
 export 
     EmulatorDensityModel,
@@ -25,12 +23,12 @@ export
     MCMCProtocol,
     EmulatorRWSampling,
     MCMCWrapper,
-    standardize_obs,
     get_stepsize,
     set_stepsize!,
     accept_ratio,
     find_mcmc_step!,
-    get_posterior
+    get_posterior,
+    sample
 
 # ------------------------------------------------------------------------------------------
 # Use emulated model in sampler
@@ -334,86 +332,71 @@ struct MCMCWrapper
     model::AbstractMCMC.AbstractModel
     "Object describing a MCMCWrapper sampling algorithm and its settings."
     sampler::AbstractMCMC.AbstractSampler
-    "Number of steps to sample in the MC."
-    N::Union{Int64, Nothing}
     "NamedTuple of other arguments to be passed to `AbstractMCMC.sample()`."
     sample_kwargs::NamedTuple
 end
 
-"""
-    standardize_obs
-
-Logic for decorrelating observational inputs using SVD.
-"""
-function standardize_obs(
-    obs_sample::Vector{FT},
-    obs_noise_cov::Array{FT, 2};
-    norm_factor::Union{Array{FT, 1}, Nothing} = nothing,
-    svd = true,
-    truncate_svd = 1.0
-) where {FT}
-    if norm_factor !== nothing
-        obs_sample = obs_sample ./ norm_factor
-        obs_noise_cov = obs_noise_cov ./ (norm_factor .* norm_factor)
+function _standardize_obs(obs_sample::Vector{FT}, em::Emulator) where {FT<:AbstractFloat}
+    # carry out same standardization as in em; necessary for consistency
+    # spin out into its own function so that we can test it properly
+    if em.standardize_outputs && (em.standardize_outputs_factors !== nothing)    
+        obs_sample = obs_sample ./ em.standardize_outputs_factors
     end
-    # We need to transform obs_sample into the correct space 
-    if svd
-        println("Applying SVD to decorrelating outputs, if not required set svdflag=false")
-        obs_sample, _ = Emulators.svd_transform(obs_sample, obs_noise_cov; truncate_svd=truncate_svd)
+    # reassemble obs_noise_cov used by emulator, which is already standardized
+    # cov was symmetric, so SVD U = V; U not saved in Decomposition
+    if em.decomposition !== nothing
+        obs_noise_cov = em.decomposition.V * Diagonal(em.decomposition.S) * em.decomposition.Vt
+        truncate_svd = em.truncate_svd
     else
-        println("Assuming independent outputs.")
+        obs_noise_cov = nothing
+        truncate_svd = 1.0
     end
-    return (obs_sample, obs_noise_cov)
+    # Emulator now always applies svd_transform; no-op if obs_noise_cov is nothing
+    # need to redo svd in case we truncated decomposition with truncate_svd < 1.0
+    obs_sample, _ = Emulators.svd_transform(
+        obs_sample, obs_noise_cov; truncate_svd = truncate_svd
+    )
+    return obs_sample, obs_noise_cov
 end
 
 """
     MCMCWrapper
 
-Constructor for [`MCMCWrapper`](@ref) which performs obs standardization and takes keywords 
-compatible with previous implementation.
+Constructor for [`MCMCWrapper`](@ref) which performs the same standardization (SVD 
+decorrelation) that was applied in the Emulator. It creates and wraps an instance of 
+[`EmulatorDensityModel`](@ref), for sampling from the Emulator, and 
+[`VariableStepMHSampler`](@ref), for generating the MC proposals.
 
 - `obs_sample`: A single sample from the observations. Can, e.g., be picked from an Obs 
   struct using get_obs_sample.
-- `obs_noise_cov`: Covariance of the observational noise.
 - `prior`: array of length `N_parameters` containing the parameters' prior distributions.
-- `step`: MCMCWrapper step size.
-- `param_init`: Starting point for MCMCWrapper sampling.
-- `max_iter`: Number of MCMCWrapper steps to take during sampling.
-- `burnin`: Initial number of MCMCWrapper steps to discard (pre-convergence).
-- `standardize`: Whether to use SVD to standardize observations.
-- `norm_factor`: Optional factor by which to rescale observations.
-- `svd`: Whether to use SVD to decorrelate observations.
-- `truncate_svd`: Threshold for retaining singular values.
+- `em`: [`Emulator`](@ref) to sample from. 
+- `step`: MCMC step size.
+- `param_init`: Starting point for MCMC sampling.
+- `max_iter`: Number of MCMC steps to take during sampling.
+- `burnin`: Initial number of MCMC steps to discard (pre-convergence).
 """
 function MCMCWrapper(
     ::EmulatorRWSampling,
     obs_sample::Vector{FT},
-    obs_noise_cov::Array{FT, 2},
-    em::Emulator,
-    prior::ParameterDistribution;
+    prior::ParameterDistribution,
+    em::Emulator;
     step::FT,
-    param_init::Vector{FT},
-    max_iter::Union{IT, Nothing} = nothing,
-    burnin::IT = 0,
-    norm_factor::Union{Array{FT, 1}, Nothing} = nothing,
-    svd = false,
-    truncate_svd=1.0,
+    init_params::Vector{FT},
+    burnin::IT=0,
     kwargs...
 ) where {FT<:AbstractFloat, IT<:Integer}
-    obs_sample, obs_noise_cov = standardize_obs(
-        obs_sample, obs_noise_cov;
-        norm_factor=norm_factor, svd=svd, truncate_svd=truncate_svd
-    )
+    obs_sample, _ = _standardize_obs(obs_sample, em)
     model = EmulatorDensityModel(prior, em, obs_sample)
     sampler = VariableStepMHSampler(get_cov(prior), step)
-    sample_kwargs = (; # defaults
-        :init_params => deepcopy(param_init),
+    sample_kwargs = (; # set defaults here
+        :init_params => deepcopy(init_params),
         :param_names => get_name(prior),
         :discard_initial => burnin,
         :chain_type => MCMCChains.Chains
     )
     sample_kwargs = merge(sample_kwargs, kwargs) # override defaults with any explicit values
-    return MCMCWrapper(prior, model, sampler, max_iter, sample_kwargs)
+    return MCMCWrapper(prior, model, sampler, sample_kwargs)
 end
 
 """
@@ -456,33 +439,26 @@ end
 # Define new methods extending AbstractMCMC.sample() using the MCMCWrapper object defined above.
 
 # use default rng if none given
-function AbstractMCMC.sample(mcmc::MCMCWrapper, args...; kwargs...)
-    return AbstractMCMC.sample(Random.GLOBAL_RNG, mcmc, args...; kwargs...)
+function sample(mcmc::MCMCWrapper, args...; kwargs...)
+    return sample(Random.GLOBAL_RNG, mcmc, args...; kwargs...)
 end
 
 # vanilla case
-function AbstractMCMC.sample(
+function sample(
     rng::Random.AbstractRNG,
     mcmc::MCMCWrapper,
-    N::Union{Integer, Nothing} = nothing;
+    N::Integer;
     kwargs...
 )
-    if N === nothing
-        N = mcmc.N
-    end
-    if N === nothing || N < 0
-        throw("Misspecified number of steps: $(N)")
-    end
     # explicit function kwargs override what's in mcmc
     kwargs = merge(mcmc.sample_kwargs, NamedTuple(kwargs))
     return AbstractMCMC.mcmcsample(rng, mcmc.model, mcmc.sampler, N; kwargs...)
 end
 
 # case where we pass an isdone() Function for early termination
-function AbstractMCMC.sample(
+function sample(
     rng::Random.AbstractRNG,
-    model::AbstractMCMC.AbstractModel,
-    sampler::AbstractMCMC.AbstractSampler,
+    mcmc::MCMCWrapper,
     isdone;
     kwargs...
 )
@@ -492,10 +468,9 @@ function AbstractMCMC.sample(
 end
 
 # parallel case
-function AbstractMCMC.sample(
+function sample(
     rng::Random.AbstractRNG,
-    model::AbstractMCMC.AbstractModel,
-    sampler::AbstractMCMC.AbstractSampler,
+    mcmc::MCMCWrapper,
     parallel::AbstractMCMC.AbstractMCMCEnsemble,
     N::Integer,
     nchains::Integer;
@@ -509,6 +484,11 @@ end
 # ------------------------------------------------------------------------------------------
 # Search for a MCMC stepsize that yields a decent MH acceptance rate
 
+"""
+    accept_ratio(chain::MCMCChains.Chains)
+
+Fraction of MC proposals in `chain` which were accepted (according to Metropolis-Hastings.)
+"""
 function accept_ratio(chain::MCMCChains.Chains)
     if :accept in names(chain, :internals)
         return mean(chain, :accept)
@@ -535,6 +515,14 @@ function _find_mcmc_step_log(it, step, acc_ratio, chain::MCMCChains.Chains)
     flush(stdout)
 end
 
+"""
+    find_mcmc_step!(mcmc::MCMCWrapper; N = 2000, max_iter = 20, sample_kwargs...)
+
+Use heuristics to choose a stepsize for the [`VariableStepMHSampler`](@ref) element of 
+`mcmc`, namely that MC proposals should be accepted between 15% and 35% of the time. This
+both changes the stepsize in the `mcmc` object, and returns the stepsize found by this
+procedure.
+"""
 function find_mcmc_step!(mcmc::MCMCWrapper; N = 2000, max_iter = 20, sample_kwargs...)
     doubled = false
     halved = false
