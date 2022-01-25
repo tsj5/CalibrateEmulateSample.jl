@@ -25,6 +25,7 @@ export
     MCMCProtocol,
     EmulatorRWSampling,
     MCMCWrapper,
+    standardize_obs,
     get_stepsize,
     set_stepsize!,
     accept_ratio,
@@ -119,6 +120,7 @@ function AdvancedMH.q(
 ) where {issymmetric}
     return logpdf(proposal, (t - t_cond) / proposal.stepsize)
 end
+logratio_proposal_density(::VariableStepProposal{true}, state, candidate) = 0
 
 """
     VariableStepMHSampler
@@ -391,9 +393,9 @@ function MCMCWrapper(
     prior::ParameterDistribution;
     step::FT,
     param_init::Vector{FT},
-    max_iter::Union{IT, Nothing}=nothing,
-    burnin::IT,
-    norm_factor::Union{Array{FT, 1}, Nothing}=nothing,
+    max_iter::Union{IT, Nothing} = nothing,
+    burnin::IT = 0,
+    norm_factor::Union{Array{FT, 1}, Nothing} = nothing,
     svd = false,
     truncate_svd=1.0,
     kwargs...
@@ -479,8 +481,8 @@ end
 # case where we pass an isdone() Function for early termination
 function AbstractMCMC.sample(
     rng::Random.AbstractRNG,
-    model::AbstractModel,
-    sampler::AbstractSampler,
+    model::AbstractMCMC.AbstractModel,
+    sampler::AbstractMCMC.AbstractSampler,
     isdone;
     kwargs...
 )
@@ -492,9 +494,9 @@ end
 # parallel case
 function AbstractMCMC.sample(
     rng::Random.AbstractRNG,
-    model::AbstractModel,
-    sampler::AbstractSampler,
-    parallel::AbstractMCMCEnsemble,
+    model::AbstractMCMC.AbstractModel,
+    sampler::AbstractMCMC.AbstractSampler,
+    parallel::AbstractMCMC.AbstractMCMCEnsemble,
     N::Integer,
     nchains::Integer;
     kwargs...
@@ -521,7 +523,7 @@ function _find_mcmc_step_log(mcmc::MCMCWrapper)
         str_ *= @sprintf " %s: %.3g" p[1] p[2]
     end
     println(str_)
-    flust(stdout)
+    flush(stdout)
 end
 
 function _find_mcmc_step_log(it, step, acc_ratio, chain::MCMCChains.Chains)
@@ -530,17 +532,17 @@ function _find_mcmc_step_log(it, step, acc_ratio, chain::MCMCChains.Chains)
         str_ *= @sprintf " %s: %.3g" p.first last(p.second)
     end
     println(str_)
-    flust(stdout)
+    flush(stdout)
 end
 
-function find_mcmc_step!(mcmc::MCMCWrapper; N = 2000, max_iter = 20)
+function find_mcmc_step!(mcmc::MCMCWrapper; N = 2000, max_iter = 20, sample_kwargs...)
     doubled = false
     halved = false
     _find_mcmc_step_log(mcmc)
     flush(stdout)
     for it = 1:max_iter
         step = get_stepsize(mcmc)
-        trial_chain = sample(mcmc, N)
+        trial_chain = sample(mcmc, N; sample_kwargs...)
         acc_ratio = accept_ratio(trial_chain)
         _find_mcmc_step_log(it, step, acc_ratio, trial_chain)
         if doubled && halved
@@ -570,20 +572,20 @@ MC samples.
 NB: multiple MCMC.Chains not implemented.
 """
 function get_posterior(mcmc::MCMCWrapper, chain::MCMCChains.Chains)
-    p_chain = Chains(chain, :parameters) # discard internal/diagnostic data; params only
-    p_names = map(string, names(p_chain))
+    p_names = get_name(mcmc.prior)
     p_slices = batch(mcmc.prior)
     flat_constraints = get_all_constraints(mcmc.prior)
     # live in same space as prior
     p_constraints = [flat_constraints[slice] for slice in p_slices]
     
     # Cast data in chain to a ParameterDistribution object. Data layout in Chain is an
-    # (N_samples x n_params x n_chains) AxisArray, so need transpose for Samples, which
-    # stores samples in columns.
-    posterior_samples = [Samples(transpose(Array(p_chain[:,slice,1]))) for slice in p_slices]
+    # (N_samples x n_params x n_chains) AxisArray, so samples are in rows.
+    p_chain = Array(Chains(chain, :parameters)) # discard internal/diagnostic data
+    posterior_samples = [
+        Samples(p_chain[:, slice, 1], params_are_columns=false) for slice in p_slices
+    ]
     posterior_distribution = ParameterDistribution(posterior_samples, p_constraints, p_names)
     return posterior_distribution
-    
 end
 
 end # module MarkovChainMonteCarlo
