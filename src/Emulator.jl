@@ -78,6 +78,8 @@ struct Emulator{FT}
     standardize_outputs_factors
     "the singular value decomposition of obs_noise_cov, such that obs_noise_cov = decomposition.U * Diagonal(decomposition.S) * decomposition.Vt. NB: the svd may be reduced in dimensions"
     decomposition::Union{Decomposition, Nothing}
+    "Degree to which input SVD spectrum was truncated."
+    truncate_svd::FT
 end
 
 # Constructor for the Emulator Object
@@ -150,7 +152,8 @@ function Emulator(
                         sqrt_inv_input_cov,
                         standardize_outputs,
                         standardize_outputs_factors,
-                        decomposition)
+                        decomposition,
+                        truncate_svd)
 end    
 
 """
