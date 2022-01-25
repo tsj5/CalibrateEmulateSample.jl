@@ -2,7 +2,7 @@
 using GaussianProcesses
    
 using PyCall
-using ScikitLearn
+using ScikitLearn: fit!
 const pykernels = PyNULL()
 const pyGP = PyNULL()
 function __init__()
@@ -285,7 +285,7 @@ function build_models!(
         # ScikitLearn.fit! arguments:
         # input_values:    (N_samples × input_dim)
         # data_i:    (N_samples,)
-        ScikitLearn.fit!(m, input_values, data_i)
+        fit!(m, input_values, data_i)
         if i==1
             println(m.kernel.hyperparameters)
             print("Completed training of: ")

@@ -4,7 +4,7 @@ using Test
 using GaussianProcesses
 using Statistics 
 using Distributions
-using ScikitLearn
+using ScikitLearn: @sk_import
 using LinearAlgebra
 @sk_import gaussian_process : GaussianProcessRegressor
 @sk_import gaussian_process.kernels : (RBF, WhiteKernel, ConstantKernel)
