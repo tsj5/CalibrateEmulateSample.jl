@@ -7,29 +7,9 @@ using LinearAlgebra
 using DocStringExtensions
 
 export Emulator
-export Decomposition
 
 export optimize_hyperparameters!
 export predict
-
-# SVD decomposition structure
-"""
-    Decomposition{<:AbstractFloat, <:Int}
-
-Struct of SVD decomposition, containing (V,S,Vt), and the size of S, N. 
-"""
-struct Decomposition{FT<:AbstractFloat, IT<:Int}
-    V::Array{FT,2}
-    Vt::Array{FT,2}
-    S::Array{FT}
-    N::IT
-end
-
-# SVD decomposition constructor
-function Decomposition(svd::SVD)
-	# svd.V is of type adjoint, transformed to Array with [:,:]
-	return Decomposition(svd.V[:,:], svd.Vt, svd.S, size(svd.S)[1])
-end
 
 """
     MachineLearningTool
@@ -77,7 +57,7 @@ struct Emulator{FT}
     "if standardizing: Standardization factors (characteristic values of the problem)"
     standardize_outputs_factors
     "the singular value decomposition of obs_noise_cov, such that obs_noise_cov = decomposition.U * Diagonal(decomposition.S) * decomposition.Vt. NB: the svd may be reduced in dimensions"
-    decomposition::Union{Decomposition, Nothing}
+    decomposition::Union{SVD, Nothing}
 end
 
 # Constructor for the Emulator Object
@@ -267,11 +247,13 @@ end
 
 
 """
-svd_transform(data::Array{FT, 2}, obs_noise_cov::Union{Array{FT, 2}, Nothing}) where {FT}
+    svd_transform(data::Array{FT, 2}, obs_noise_cov::Union{Array{FT, 2}, Nothing}, truncate_svd) where {FT}
 
 Apply a singular value decomposition (SVD) to the data
   - `data` - GP training data/targets; output_dim × N_samples
   - `obs_noise_cov` - covariance of observational noise
+  - `truncate_svd` - Project onto this fraction of the largest principal components. Defaults
+    to 1.0 (no truncation).
 
 Returns the transformed data and the decomposition, which is a matrix 
 factorization of type LinearAlgebra.SVD. 
@@ -281,98 +263,49 @@ F.U, F.S, F.V and F.Vt, such that A = U * Diagonal(S) * Vt. The singular values
 in S are sorted in descending order.
 """
 function svd_transform(
-    data::Array{FT, 2},
-    obs_noise_cov; 
-    truncate_svd::FT=1.0) where {FT}
-
-    if obs_noise_cov !== nothing
-        @assert ndims(obs_noise_cov) == 2
+    data::Array{FT, 2}, 
+    obs_noise_cov::Union{Array{FT, 2}, Nothing}; 
+    truncate_svd::FT=1.0
+) where {FT}
+    if obs_noise_cov === nothing
+        # no-op case
+        return data, nothing
     end
-    if obs_noise_cov !== nothing
+    # actually have a matrix to take the SVD of
+    decomp = svd(obs_noise_cov)
+    sqrt_singular_values_inv = Diagonal(1.0 ./ sqrt.(decomp.S)) 
+	if truncate_svd < 1.0
         # Truncate the SVD as a form of regularization
-	if truncate_svd<1.0 # this variable needs to be provided to this function
-            # Perform SVD
-            decomposition = svd(obs_noise_cov)
-            # Find cutoff
-            σ = decomposition.S
-            σ_cumsum = cumsum(σ) / sum(σ);
-            P_cutoff = truncate_svd;
-            ind = findall(x->x>P_cutoff, σ_cumsum); k = ind[1]
-            println("SVD truncated at k:")
-            println(k)
-            # Apply truncated SVD
-            n = size(obs_noise_cov)[1]
-            sqrt_singular_values_inv = Diagonal(1.0 ./ sqrt.(decomposition.S))
-	    transformed_data = sqrt_singular_values_inv[1:k,1:k] * decomposition.Vt[1:k,:] * data
-            transformed_data = transformed_data;
-            decomposition = Decomposition(decomposition.V[:,1:k], decomposition.Vt[1:k,:], 
-                                   decomposition.S[1:k], n)
+        # Find cutoff
+        S_cumsum = cumsum(decomp.S) / sum(decomp.S)
+        ind = findall(x -> (x > truncate_svd), S_cumsum)
+        k = ind[1]
+        n = size(obs_noise_cov)[1]
+        println("SVD truncated at k: ", k, "/", n)
+        # Apply truncated SVD
+	    transformed_data = sqrt_singular_values_inv[1:k, 1:k] * decomp.Vt[1:k, :] * data
+        decomposition = SVD(decomp.U[:, 1:k], decomp.S[1:k], decomp.Vt[1:k, :])
 	else
-            decomposition = svd(obs_noise_cov)
-            sqrt_singular_values_inv = Diagonal(1.0 ./ sqrt.(decomposition.S)) 
-            transformed_data = sqrt_singular_values_inv * decomposition.Vt * data
-	    decomposition = Decomposition(svd(obs_noise_cov))
-        end
-    else
-        decomposition = nothing
-        transformed_data = data
+        transformed_data = sqrt_singular_values_inv * decomp.Vt * data
+	    decomposition = svd(obs_noise_cov)
     end
-
     return transformed_data, decomposition
 end
 
-
-"""
 function svd_transform(
     data::Vector{FT}, 
-    obs_noise_cov::Union{Array{FT, 2}, Nothing};
-    truncate_svd::FT=1.0) where {FT}
-
-"""
-function svd_transform(
-    data::Vector{FT}, 
-    obs_noise_cov;
-    truncate_svd::FT=1.0) where {FT}
-
-   
-    if obs_noise_cov !== nothing
-        @assert ndims(obs_noise_cov) == 2
-    end
-    if obs_noise_cov !== nothing
-        # Truncate the SVD as a form of regularization
-	if truncate_svd<1.0 # this variable needs to be provided to this function
-            # Perform SVD
-            decomposition = svd(obs_noise_cov)
-            # Find cutoff
-            σ = decomposition.S
-            σ_cumsum = cumsum(σ) / sum(σ);
-            P_cutoff = truncate_svd;
-            ind = findall(x->x>P_cutoff, σ_cumsum); k = ind[1]
-            println("SVD truncated at k:")
-            println(k)
-            # Apply truncated SVD
-            n = size(obs_noise_cov)[1]
-            sqrt_singular_values_inv = Diagonal(1.0 ./ sqrt.(decomposition.S))
-	    transformed_data = sqrt_singular_values_inv[1:k,1:k] * decomposition.Vt[1:k,:] * data
-            transformed_data = transformed_data;
-            decomposition = Decomposition(decomposition.V[:,1:k], decomposition.Vt[1:k,:], 
-                                   decomposition.S[1:k], n)
-	else
-            decomposition = svd(obs_noise_cov)
-            sqrt_singular_values_inv = Diagonal(1.0 ./ sqrt.(decomposition.S)) 
-            transformed_data = sqrt_singular_values_inv * decomposition.Vt * data
-	    decomposition = Decomposition(svd(obs_noise_cov))
-        end
-    else
-        decomposition = nothing
-        transformed_data = data
-    end
-
-    return transformed_data, decomposition
+    obs_noise_cov::Union{Array{FT, 2}, Nothing}; 
+    truncate_svd::FT=1.0
+) where {FT}
+    # method for 1D data
+    transformed_data, decomposition = svd_transform(
+        reshape(data, :, 1), obs_noise_cov; truncate_svd=truncate_svd
+    )
+    return vec(transformed_data), decomposition
 end
 
 """
-svd_reverse_transform_mean_cov(μ::Array{FT, 2}, σ2::{Array{FT, 2}, decomposition::SVD) where {FT}
+svd_reverse_transform_mean_cov(μ::Array{FT, 2}, σ2::Array{FT, 2}, decomposition::SVD) where {FT}
 
 Transform the mean and covariance back to the original (correlated) coordinate system
   - `μ` - predicted mean; output_dim × N_predicted_points
@@ -385,22 +318,20 @@ elements on the main diagonal (i.e., the variances), we return the full
 covariance at each point, as a vector of length N_predicted_points, where 
 each element is a matrix of size output_dim × output_dim
 """
-function svd_reverse_transform_mean_cov(μ, σ2, 
-                                        decomposition::Union{SVD, Decomposition};
-					truncate_svd::FT=1.0) where {FT}
+function svd_reverse_transform_mean_cov(μ::Array{FT, 2}, σ2::Array{FT, 2}, decomposition::SVD) where {FT}
     @assert ndims(μ) == 2
     @assert ndims(σ2) == 2
     
     output_dim, N_predicted_points = size(σ2)
     # We created meanvGP = D_inv * Vt * mean_v so meanv = V * D * meanvGP
-    sqrt_singular_values= Diagonal(sqrt.(decomposition.S))
+    sqrt_singular_values = Diagonal(sqrt.(decomposition.S))
     transformed_μ = decomposition.V * sqrt_singular_values * μ
     
     transformed_σ2 = [zeros(output_dim, output_dim) for i in 1:N_predicted_points]
     # Back transformation
     
     for j in 1:N_predicted_points
-        σ2_j = decomposition.V * sqrt_singular_values * Diagonal(σ2[:,j]) * sqrt_singular_values * decomposition.Vt
+        σ2_j = decomposition.U * sqrt_singular_values * Diagonal(σ2[:,j]) * sqrt_singular_values * decomposition.Vt
         transformed_σ2[j] = σ2_j
     end
     

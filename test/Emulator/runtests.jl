@@ -33,22 +33,21 @@ using CalibrateEmulateSample.DataStorage
     # [1.] test SVD (2D y version)
     test_SVD = svd(Σ)
     transformed_y, decomposition = Emulators.svd_transform(y, Σ, truncate_svd=1.0)
-    @test_throws AssertionError Emulators.svd_transform(y, Σ[:,1], truncate_svd=1.0)
+    @test_throws MethodError Emulators.svd_transform(y, Σ[:,1], truncate_svd=1.0)
     @test test_SVD.V[:,:] == decomposition.V #(use [:,:] to make it an array)
     @test test_SVD.Vt == decomposition.Vt
     @test test_SVD.S == decomposition.S
-    @test size(test_SVD.S)[1] == decomposition.N
     @test size(transformed_y) == size(y)
 
     # 1D y version
     transformed_y, decomposition2 = Emulators.svd_transform(y[:, 1], Σ, truncate_svd=1.0)
-    @test_throws AssertionError Emulators.svd_transform(y[:,1], Σ[:,1], truncate_svd=1.0)
+    @test_throws MethodError Emulators.svd_transform(y[:,1], Σ[:,1], truncate_svd=1.0)
     @test size(transformed_y) == size(y[:, 1])
     
     # Reverse SVD
-    y_new, y_cov_new = Emulators.svd_reverse_transform_mean_cov(reshape(transformed_y,(d,1)),ones(d,1),decomposition2, truncate_svd=1.0)
-    @test_throws AssertionError Emulators.svd_reverse_transform_mean_cov(transformed_y,ones(d,1),decomposition2, truncate_svd=1.0)
-    @test_throws AssertionError Emulators.svd_reverse_transform_mean_cov(reshape(transformed_y,(d,1)),ones(d),decomposition2, truncate_svd=1.0)
+    y_new, y_cov_new = Emulators.svd_reverse_transform_mean_cov(reshape(transformed_y, (d,1)), ones(d,1), decomposition2)
+    @test_throws MethodError Emulators.svd_reverse_transform_mean_cov(transformed_y, ones(d,1), decomposition2)
+    @test_throws MethodError Emulators.svd_reverse_transform_mean_cov(reshape(transformed_y,(d,1)), ones(d), decomposition2)
     @test size(y_new)[1] == size(y[:, 1])[1]
     @test y_new ≈ y[:,1]
     @test y_cov_new[1] ≈ Σ
@@ -107,7 +106,6 @@ using CalibrateEmulateSample.DataStorage
     @test test_decomp.V == decomposition.V #(use [:,:] to make it an array)
     @test test_decomp.Vt == decomposition.Vt
     @test test_decomp.S == decomposition.S
-    @test test_decomp.N == decomposition.N
 
     emulator2 = Emulator(
         gp,
