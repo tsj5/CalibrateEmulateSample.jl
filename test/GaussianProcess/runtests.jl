@@ -57,16 +57,15 @@ using CalibrateEmulateSample.DataStorage
     @test gp1.noise_learn == true
     @test gp1.prediction_type == pred_type
     
-    em1 = Emulator(
+    em1 = Emulators.Emulator(
         gp1,
-        iopairs,
+        iopairs;
         obs_noise_cov=nothing,
         normalize_inputs=false,
-        standardize_outputs=false,
+        standardize_outputs_factors=nothing,
         truncate_svd=1.0)
 
     Emulators.optimize_hyperparameters!(em1)
-
     μ1, σ1² = Emulators.predict(em1, new_inputs)
     
     @test vec(μ1) ≈ [0.0, 1.0, 0.0, -1.0, 0.0] atol=0.3
@@ -87,7 +86,7 @@ using CalibrateEmulateSample.DataStorage
         iopairs,
         obs_noise_cov=nothing,
         normalize_inputs=false,
-        standardize_outputs=false,
+        standardize_outputs_factors=nothing,
         truncate_svd=1.0)
 
     Emulators.optimize_hyperparameters!(em2)
@@ -117,7 +116,7 @@ using CalibrateEmulateSample.DataStorage
         iopairs,
         obs_noise_cov=nothing,
         normalize_inputs=false,
-        standardize_outputs=false,
+        standardize_outputs_factors=nothing,
         truncate_svd=1.0)
 
     Emulators.optimize_hyperparameters!(em3)
@@ -177,7 +176,7 @@ using CalibrateEmulateSample.DataStorage
         iopairs2,
         obs_noise_cov=Σ,
         normalize_inputs=true,
-        standardize_outputs=false,
+        standardize_outputs_factors=nothing,
         truncate_svd=1.0)
 
     Emulators.optimize_hyperparameters!(em4)
