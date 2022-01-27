@@ -239,27 +239,17 @@ println(truth.mean)
 u0 = vec(mean(get_inputs(input_output_pairs), dims=2))
 println("initial parameters: ", u0)
 
-# MCMC settings
-mcmc_alg = "rwm" # random walk Metropolis
-
 # First let's run a short chain to determine a good step size
-burnin = 0
-step = 0.1 # first guess
-max_iter = 2000 # number of steps before checking acc/rej rate for step size determination
 yt_sample = truth_sample
-mcmc_test = MarkovChainMonteCarlo.MCMC(yt_sample, Γy, priors, step, u0, max_iter, 
-                         mcmc_alg, burnin, svdflag=true)
-new_step = MarkovChainMonteCarlo.find_mcmc_step!(mcmc_test, emulator, max_iter=max_iter)
+mcmc = MCMCWrapper(
+    EmulatorRWSampling(), yt_sample, priors, emulator; step=0.1, init_params=u0
+)
+new_step = MarkovChainMonteCarlo.find_mcmc_step!(mcmc; N=2000, discard_initial=0)
 
 # Now begin the actual MCMC
 println("Begin MCMC - with step size ", new_step)
-burnin = 1000
-max_iter = 100000
-mcmc = MarkovChainMonteCarlo.MCMC(yt_sample, Γy, priors, new_step, u0, max_iter, mcmc_alg,
-                    burnin, svdflag=true)
-MarkovChainMonteCarlo.sample_posterior!(mcmc, emulator, max_iter)
-
-posterior = MarkovChainMonteCarlo.get_posterior(mcmc)
+chain = MarkovChainMonteCarlo.sample(mcmc, 100_000; discard_initial=1_000)
+posterior = MarkovChainMonteCarlo.get_posterior(mcmc, chain)      
 
 post_mean = get_mean(posterior)
 post_cov = get_cov(posterior)
@@ -290,7 +280,7 @@ for idx in 1:n_params
                                  dims=1)
     histogram(posterior_samples, bins=100, normed=true, fill=:slategray,
               thickness_scaling=2.0, lab="posterior", legend=:outertopright)
-    prior_dist = get_distribution(mcmc.prior)[param_names[idx]]
+    prior_dist = get_distribution(priors)[param_names[idx]]
     plot!(xs, prior_dist, w=2.6, color=:blue, lab="prior")
     plot!([transformed_params_true[idx]], seriestype="vline", w=2.6, lab=label)
     title!(param_names[idx])

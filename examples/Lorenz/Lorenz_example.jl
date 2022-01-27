@@ -207,7 +207,7 @@ else
     # Covariance of truth data
     Γy = cov(yt, dims=2)
     
-    println(Γy)
+    # println(Γy)
     println(size(Γy), " ", rank(Γy))
 end
 
@@ -307,7 +307,6 @@ emulator = Emulator(
     input_output_pairs;
     obs_noise_cov=Γy,
     normalize_inputs=normalized,
-    standardize_outputs=standardize,
     standardize_outputs_factors=norm_factor,
     truncate_svd=truncate_svd
 )
@@ -341,40 +340,17 @@ optimize_hyperparameters!(emulator)
 u0 = vec(mean(get_inputs(input_output_pairs), dims=2))
 println("initial parameters: ", u0)
 
-# MCMC parameters    
-mcmc_alg = "rwm" # random walk Metropolis
-svd_flag = true
-
 # First let's run a short chain to determine a good step size
-burnin = 0
-step = 0.1 # first guess
-max_iter = 2000
 yt_sample = truth_sample
-mcmc_test = MarkovChainMonteCarlo.MCMC(
-    yt_sample, Γy, priors, step, u0, max_iter, mcmc_alg, burnin;
-    svdflag=svd_flag, standardize=standardize, truncate_svd=truncate_svd,
-    norm_factor=norm_factor
+mcmc = MCMCWrapper(
+    EmulatorRWSampling(), yt_sample, priors, emulator; step=0.1, init_params=u0
 )
-new_step = MarkovChainMonteCarlo.find_mcmc_step!(mcmc_test, emulator, max_iter=max_iter)
+new_step = MarkovChainMonteCarlo.find_mcmc_step!(mcmc; N=2000, discard_initial=0)
 
 # Now begin the actual MCMC
 println("Begin MCMC - with step size ", new_step)
-
-# reset parameters 
-burnin = 2000
-max_iter = 100000
-
-mcmc = MarkovChainMonteCarlo.MCMC(
-    yt_sample, Γy, priors, new_step, u0, max_iter, mcmc_alg, burnin;
-    svdflag=svd_flag, standardize=standardize, truncate_svd=truncate_svd,
-    norm_factor=norm_factor
-)
-MarkovChainMonteCarlo.sample_posterior!(mcmc, emulator, max_iter)
-
-println("Posterior size")
-println(size(mcmc.posterior))
-
-posterior = MarkovChainMonteCarlo.get_posterior(mcmc)      
+chain = MarkovChainMonteCarlo.sample(mcmc, 100_000; discard_initial=2_000)
+posterior = MarkovChainMonteCarlo.get_posterior(mcmc, chain)      
 
 post_mean = get_mean(posterior)
 post_cov = get_cov(posterior)
@@ -422,7 +398,7 @@ for idx in 1:n_params
 
     histogram(posterior_distributions[param_names[idx]][1,:], bins=100, normed=true, fill=:slategray, 
               lab="posterior")
-    prior_plot = get_distribution(mcmc.prior)
+    prior_plot = get_distribution(priors)
     # This requires StatsPlots
     plot!(xs, prior_plot[param_names[idx]], w=2.6, color=:blue, lab="prior")
     #plot!(xs, mcmc.prior[idx].dist, w=2.6, color=:blue, lab="prior")
