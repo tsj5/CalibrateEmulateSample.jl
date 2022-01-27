@@ -46,9 +46,9 @@ using CalibrateEmulateSample.DataStorage
     @test size(transformed_y) == size(y[:, 1])
     
     # Reverse SVD
-    y_new, y_cov_new = Emulators.svd_reverse_transform_mean_cov(reshape(transformed_y,(d,1)),ones(d,1),decomposition2, truncate_svd=1.0)
-    @test_throws AssertionError Emulators.svd_reverse_transform_mean_cov(transformed_y,ones(d,1),decomposition2, truncate_svd=1.0)
-    @test_throws AssertionError Emulators.svd_reverse_transform_mean_cov(reshape(transformed_y,(d,1)),ones(d),decomposition2, truncate_svd=1.0)
+    y_new, y_cov_new = Emulators.svd_reverse_transform_mean_cov(reshape(transformed_y,(d,1)),ones(d,1),decomposition2)
+    @test_throws MethodError Emulators.svd_reverse_transform_mean_cov(transformed_y,ones(d,1),decomposition2)
+    @test_throws MethodError Emulators.svd_reverse_transform_mean_cov(reshape(transformed_y,(d,1)),ones(d),decomposition2)
     @test size(y_new)[1] == size(y[:, 1])[1]
     @test y_new ≈ y[:,1]
     @test y_cov_new[1] ≈ Σ

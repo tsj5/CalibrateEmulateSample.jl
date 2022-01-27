@@ -169,10 +169,10 @@ end
 """
     function predict(emulator::Emulator, new_inputs; transform_to_real=false) 
 
-makes a prediction using the emulator on new inputs (each new inputs given as data columns), default is to predict in the decorrelated space
+makes a prediction using the emulator on new inputs (each new inputs given as data columns);
+default is to predict in the decorrelated space.
 """
-function predict(emulator::Emulator{FT}, new_inputs; transform_to_real=false) where {FT}
-
+function predict(emulator::Emulator{FT}, new_inputs::Array{FT,2}; transform_to_real=false) where {FT}
     # Check if the size of new_inputs is consistent with the GP model's input
     # dimension. 
     input_dim, output_dim = size(emulator.training_pairs, 1)
@@ -200,7 +200,6 @@ function predict(emulator::Emulator{FT}, new_inputs; transform_to_real=false) wh
         end
         # [4.] unstandardize
         return reverse_standardize(emulator, s_outputs, s_output_cov)
-        
     else
         # remain in decorrelated, standardized coordinates (cov remains diagonal)
         # Convert to vector of  matrices to match the format  
@@ -209,15 +208,9 @@ function predict(emulator::Emulator{FT}, new_inputs; transform_to_real=false) wh
         if output_dim == 1
             ds_output_diagvar = [ds_output_diagvar[i][1] for i in 1:N_samples]
         end
-
         return ds_outputs, ds_output_diagvar
-        
     end
-
 end
-
-
-
 
 # Normalization, Standardization, and Decorrelation
 """
@@ -375,7 +368,7 @@ function svd_transform(
 end
 
 """
-svd_reverse_transform_mean_cov(μ::Array{FT, 2}, σ2::{Array{FT, 2}, decomposition::SVD) where {FT}
+    svd_reverse_transform_mean_cov(μ::Array{FT, 2}, σ2::Array{FT, 2}, decomposition::SVD)
 
 Transform the mean and covariance back to the original (correlated) coordinate system
   - `μ` - predicted mean; output_dim × N_predicted_points
@@ -388,9 +381,9 @@ elements on the main diagonal (i.e., the variances), we return the full
 covariance at each point, as a vector of length N_predicted_points, where 
 each element is a matrix of size output_dim × output_dim
 """
-function svd_reverse_transform_mean_cov(μ, σ2, 
-                                        decomposition::Union{SVD, Decomposition};
-					truncate_svd::FT=1.0) where {FT}
+function svd_reverse_transform_mean_cov(
+    μ::Array{FT, 2}, σ2::Array{FT, 2}, decomposition::Union{SVD, Decomposition}
+) where {FT<:AbstractFloat}
     @assert ndims(μ) == 2
     @assert ndims(σ2) == 2
     
@@ -399,12 +392,12 @@ function svd_reverse_transform_mean_cov(μ, σ2,
     sqrt_singular_values= Diagonal(sqrt.(decomposition.S))
     transformed_μ = decomposition.V * sqrt_singular_values * μ
     
-    transformed_σ2 = [zeros(output_dim, output_dim) for i in 1:N_predicted_points]
+    transformed_σ2 = Vector{Symmetric{FT, Matrix{FT}}}(undef, N_predicted_points)
     # Back transformation
     
     for j in 1:N_predicted_points
         σ2_j = decomposition.V * sqrt_singular_values * Diagonal(σ2[:,j]) * sqrt_singular_values * decomposition.Vt
-        transformed_σ2[j] = σ2_j
+        transformed_σ2[j] = Symmetric(σ2_j)
     end
     
     return transformed_μ, transformed_σ2
