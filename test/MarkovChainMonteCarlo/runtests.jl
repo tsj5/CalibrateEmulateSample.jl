@@ -96,11 +96,10 @@ end
             normalize_inputs=false, standardize_outputs=false, 
             standardize_outputs_factors=nothing, truncate_svd=1.0
         )
-        test_obs, test_cov = MarkovChainMonteCarlo._standardize_obs(obs_sample, em)
+        test_obs = MarkovChainMonteCarlo.to_decorrelated(obs_sample, em)
         # The MCMC stored a SVD-transformed sample,
         # 1.0/sqrt(0.05) * obs_sample ≈ 4.472
         @test isapprox(test_obs, (obs_sample ./ sqrt(σ2_y[1,1])); atol=1e-2)
-        @test isapprox(test_cov, σ2_y; atol=1e-2)
     end
 
     @testset "Sine GP & RW Metropolis" begin

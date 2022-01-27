@@ -16,7 +16,7 @@ import AbstractMCMC: sample # Reexport sample()
 using AbstractMCMC
 import AdvancedMH
 
-export 
+export
     EmulatorDensityModel,
     VariableStepProposal,
     VariableStepMHSampler,
@@ -29,6 +29,38 @@ export
     find_mcmc_step!,
     get_posterior,
     sample
+
+# ------------------------------------------------------------------------------------------
+# Output space transformations between original and SVD-decorrelated coordinates.
+# Redundant with what's in Emulators.jl, but need to reimplement since we don't have
+# access to obs_noise_cov
+
+"""
+    to_decorrelated(data::Array{FT, 2}, em::Emulator)
+
+Transform samples from the original (correlated) coordinate system to the SVD-decorrelated
+coordinate system used by Emulator.
+"""
+function to_decorrelated(data::Array{FT, 2}, em::Emulator{FT}) where {FT<:AbstractFloat}
+    if em.standardize_outputs && em.standardize_outputs_factors !== nothing 
+        # standardize() data by scale factors, if they were given
+        data = data ./ em.standardize_outputs_factors
+    end
+    decomp = em.decomposition
+    if decomp !== nothing
+        # Use SVD decomposition of obs noise cov, if given, to transform data to 
+        # decorrelated coordinates.
+        inv_sqrt_singvals = Diagonal(1.0 ./ sqrt.(decomp.S)) 
+        return inv_sqrt_singvals * decomp.Vt * data
+    else
+        return data
+    end
+end
+function to_decorrelated(data::Vector{FT}, bem::Emulator{FT}) where {FT<:AbstractFloat}
+    # method for single sample
+    out_data = to_decorrelated(reshape(data, :, 1), bem)
+    return vec(out_data)
+end
 
 # ------------------------------------------------------------------------------------------
 # Use emulated model in sampler
@@ -50,10 +82,11 @@ function EmulatorDensityModel(
     # recall predict() written to return multiple `N_samples`: expects input to be a Matrix
     # with `N_samples` columns. Returned g is likewise a Matrix, and g_cov is a Vector of 
     # `N_samples` covariance matrices. For MH, N_samples is always 1, so we have to 
-    # reshape()/re-cast input/output. 
-    # transform_to_real = false means we work in the standardized space.
+    # reshape()/re-cast input/output; simpler to do here than add a predict() method.
     return AdvancedMH.DensityModel(
-        function (θ) # θ: dummy variable -- model params we evaluate at
+        function (θ) 
+            # θ: model params we evaluate at; in original coords.
+            # transform_to_real = false means g, g_cov, obs_sample are in decorrelated coords.
             g, g_cov = Emulators.predict(em, reshape(θ,:,1), transform_to_real=false)
             return logpdf(MvNormal(obs_sample, g_cov[1]), vec(g)) + get_logpdf(prior, θ)
        end
@@ -336,29 +369,6 @@ struct MCMCWrapper
     sample_kwargs::NamedTuple
 end
 
-function _standardize_obs(obs_sample::Vector{FT}, em::Emulator) where {FT<:AbstractFloat}
-    # carry out same standardization as in em; necessary for consistency
-    # spin out into its own function so that we can test it properly
-    if em.standardize_outputs && (em.standardize_outputs_factors !== nothing)    
-        obs_sample = obs_sample ./ em.standardize_outputs_factors
-    end
-    # reassemble obs_noise_cov used by emulator, which is already standardized
-    # cov was symmetric, so SVD U = V; U not saved in Decomposition
-    if em.decomposition !== nothing
-        obs_noise_cov = em.decomposition.V * Diagonal(em.decomposition.S) * em.decomposition.Vt
-        truncate_svd = em.truncate_svd
-    else
-        obs_noise_cov = nothing
-        truncate_svd = 1.0
-    end
-    # Emulator now always applies svd_transform; no-op if obs_noise_cov is nothing
-    # need to redo svd in case we truncated decomposition with truncate_svd < 1.0
-    obs_sample, _ = Emulators.svd_transform(
-        obs_sample, obs_noise_cov; truncate_svd = truncate_svd
-    )
-    return obs_sample, obs_noise_cov
-end
-
 """
     MCMCWrapper
 
@@ -386,7 +396,7 @@ function MCMCWrapper(
     burnin::IT=0,
     kwargs...
 ) where {FT<:AbstractFloat, IT<:Integer}
-    obs_sample, _ = _standardize_obs(obs_sample, em)
+    obs_sample = to_decorrelated(obs_sample, em)
     model = EmulatorDensityModel(prior, em, obs_sample)
     sampler = VariableStepMHSampler(get_cov(prior), step)
     sample_kwargs = (; # set defaults here
