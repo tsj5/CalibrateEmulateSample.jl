@@ -45,7 +45,7 @@ using CalibrateEmulateSample.DataStorage
         iopairs,
         obs_noise_cov=σ2_y,
         normalize_inputs=false,
-        standardize_outputs=false,
+        standardize_outputs_factors=nothing,
         truncate_svd=1.0)
 
     Emulators.optimize_hyperparameters!(em)
@@ -70,9 +70,8 @@ using CalibrateEmulateSample.DataStorage
     step = 0.5 # first guess
     max_iter = 5000
     norm_factors=nothing
-    mcmc_test = MCMC(obs_sample, σ2_y, prior, step, param_init, max_iter, 
-                        mcmc_alg, burnin; svdflag=true, standardize=false,
-			truncate_svd=1.0, norm_factor=norm_factors)
+    mcmc_test = MCMC(obs_sample, σ2_y, prior, em, step, param_init, max_iter, 
+                        mcmc_alg, burnin)
     new_step = find_mcmc_step!(mcmc_test, em)
 
     # reset parameters 
@@ -80,9 +79,8 @@ using CalibrateEmulateSample.DataStorage
     max_iter = 100_000
 
     # Now begin the actual MCMC
-    mcmc = MCMC(obs_sample, σ2_y, prior, step, param_init, max_iter, 
-                   mcmc_alg, burnin; svdflag=true, standardize=false,
-                   truncate_svd=1.0, norm_factor=norm_factors)
+    mcmc = MCMC(obs_sample, σ2_y, prior, em, step, param_init, max_iter, 
+                   mcmc_alg, burnin)
     sample_posterior!(mcmc, em, max_iter)
     posterior_distribution = get_posterior(mcmc)      
     #post_mean = mean(posterior, dims=1)[1]

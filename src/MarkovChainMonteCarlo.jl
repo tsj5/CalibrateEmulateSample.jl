@@ -70,37 +70,28 @@ function MCMC(
     obs_sample::Vector{FT},
     obs_noise_cov::Array{FT, 2},
     prior::ParameterDistribution,
+    em::Emulator,
     step::FT,
     param_init::Vector{FT},
     max_iter::IT,
     algtype::String,
-    burnin::IT;
-    svdflag=true,
-    standardize=false,
-    norm_factor::Union{Array{FT, 1}, Nothing}=nothing,
-    truncate_svd=1.0) where {FT<:AbstractFloat, IT<:Int}
-
-    
+    burnin::IT
+) where {FT<:AbstractFloat, IT<:Int}
     param_init_copy = deepcopy(param_init)
     
     # Standardize MCMC input?
     println(obs_sample)
     println(obs_noise_cov)
-    if standardize
-        obs_sample = obs_sample ./ norm_factor;
-	cov_norm_factor = norm_factor .* norm_factor;
-	obs_noise_cov = obs_noise_cov ./ cov_norm_factor;
+    if em.standardize_outputs_factors !== nothing
+        norm_factor = em.standardize_outputs_factors
+        obs_sample = obs_sample ./ norm_factor
+        obs_noise_cov = obs_noise_cov ./ (norm_factor .* norm_factor')
     end
     println(obs_sample)
     println(obs_noise_cov)
 
     # We need to transform obs_sample into the correct space 
-    if svdflag
-        println("Applying SVD to decorrelating outputs, if not required set svdflag=false")
-        obs_sample, unused = Emulators.svd_transform(obs_sample, obs_noise_cov; truncate_svd=truncate_svd)
-    else
-        println("Assuming independent outputs.")
-    end
+    obs_sample = Emulators.to_decorrelated(obs_sample, em)
     println(obs_sample)
     
     # first row is param_init
