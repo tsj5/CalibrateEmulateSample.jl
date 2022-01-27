@@ -1,11 +1,7 @@
 # Reference the in-tree version of CalibrateEmulateSample on Julias load path
 prepend!(LOAD_PATH, [joinpath(@__DIR__, "..", "..")])
 include(joinpath(@__DIR__, "..", "ci", "linkfig.jl"))
-
-# This example requires Cloudy to be installed.
-#using Pkg; Pkg.add(PackageSpec(name="Cloudy", version="0.1.0"))
-using Cloudy
-const PDistributions = Cloudy.ParticleDistributions
+include(joinpath(@__DIR__, "GModel.jl")) # Import the module that runs Cloudy
 
 # Import modules
 using Distributions  # probability distributions and associated functions
@@ -17,17 +13,17 @@ using Plots
 using Random
 
 # Import Calibrate-Emulate-Sample modules
-using CalibrateEmulateSample.EnsembleKalmanProcessModule
 using CalibrateEmulateSample.Emulators
 using CalibrateEmulateSample.MarkovChainMonteCarlo
-using CalibrateEmulateSample.Observations
 using CalibrateEmulateSample.Utilities
+using CalibrateEmulateSample.EnsembleKalmanProcessModule
 using CalibrateEmulateSample.ParameterDistributionStorage
 using CalibrateEmulateSample.DataStorage
+using CalibrateEmulateSample.Observations
 
-# Import the module that runs Cloudy
-include(joinpath(@__DIR__, "GModel.jl"))
-using .GModel
+# This example requires Cloudy to be installed.
+using Cloudy
+const PDistributions = Cloudy.ParticleDistributions
 
 ################################################################################
 #                                                                              #
