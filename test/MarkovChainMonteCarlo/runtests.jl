@@ -48,8 +48,8 @@ function test_em_gp_1(y, σ2_y, iopairs::PairedDataContainer; normalize_inputs=f
     em = Emulator(
         gp, iopairs;
         obs_noise_cov=σ2_y, 
-        normalize_inputs=normalize_inputs, 
-        standardize_outputs=standardize_outputs, 
+        normalize_inputs=normalize_inputs,
+        standardize_outputs=standardize_outputs,
         standardize_outputs_factors=standardize_outputs_factors, 
         truncate_svd=truncate_svd
     )
@@ -105,7 +105,7 @@ end
     @testset "Sine GP & RW Metropolis" begin
         em_1 = test_em_gp_1(
             y, σ2_y, iopairs; 
-            normalize_inputs=false, standardize_outputs=false, 
+            normalize_inputs=false,
             standardize_outputs_factors=nothing, truncate_svd=1.0
         )
         new_step, posterior_mean_1 = mcmc_test_template(prior, σ2_y, em_1; mcmc_params...)
@@ -118,7 +118,7 @@ end
         norm_factor = fill(norm_factor, size(y[:,1])) # must be size of output dim
         em_2 = test_em_gp_1(
             y, σ2_y, iopairs; 
-            normalize_inputs=false, standardize_outputs=true, 
+            normalize_inputs=false,
             standardize_outputs_factors=norm_factor, truncate_svd=0.95
         )
         _, posterior_mean_2 = mcmc_test_template(prior, σ2_y, em_2; mcmc_params...)
