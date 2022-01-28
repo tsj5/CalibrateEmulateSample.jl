@@ -277,7 +277,7 @@ end
 
 # Emulate-sample settings
 standardize = true
-truncate_svd = 0.95
+retained_svd_frac = 0.95
 
 gppackage = Emulators.GPJL()
 pred_type = Emulators.YType()
@@ -308,13 +308,13 @@ emulator = Emulator(
     obs_noise_cov=Γy,
     normalize_inputs=normalized,
     standardize_outputs_factors=norm_factor,
-    truncate_svd=truncate_svd
+    retained_svd_frac=retained_svd_frac
 )
 optimize_hyperparameters!(emulator)
 
 # Check how well the Gaussian Process regression predicts on the
 # true parameters
-#if truncate_svd==1.0
+#if retained_svd_frac==1.0
     if log_normal==false
         y_mean, y_var = Emulators.predict(emulator, reshape(params_true, :, 1), 
                                          transform_to_real=true)

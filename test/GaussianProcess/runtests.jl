@@ -63,7 +63,7 @@ using CalibrateEmulateSample.DataStorage
         obs_noise_cov=nothing,
         normalize_inputs=false,
         standardize_outputs=false,
-        truncate_svd=1.0)
+        retained_svd_frac=1.0)
 
     Emulators.optimize_hyperparameters!(em1)
 
@@ -88,7 +88,7 @@ using CalibrateEmulateSample.DataStorage
         obs_noise_cov=nothing,
         normalize_inputs=false,
         standardize_outputs=false,
-        truncate_svd=1.0)
+        retained_svd_frac=1.0)
 
     Emulators.optimize_hyperparameters!(em2)
 
@@ -118,14 +118,14 @@ using CalibrateEmulateSample.DataStorage
         obs_noise_cov=nothing,
         normalize_inputs=false,
         standardize_outputs=false,
-        truncate_svd=1.0)
+        retained_svd_frac=1.0)
 
     Emulators.optimize_hyperparameters!(em3)
 
     
     #gp3 = GaussianProcess(iopairs, gppackage; GPkernel=GPkernel, obs_noise_cov=nothing,
     #               normalized=false, noise_learn=true, 
-    #	   truncate_svd=1.0, standardize=false,
+    #	   retained_svd_frac=1.0, standardize=false,
     #               prediction_type=pred_type, norm_factor=nothing)
    
     μ3, σ3² = Emulators.predict(em3, new_inputs)
@@ -178,7 +178,7 @@ using CalibrateEmulateSample.DataStorage
         obs_noise_cov=Σ,
         normalize_inputs=true,
         standardize_outputs=false,
-        truncate_svd=1.0)
+        retained_svd_frac=1.0)
 
     Emulators.optimize_hyperparameters!(em4)
     

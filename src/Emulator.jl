@@ -64,7 +64,7 @@ Structure used to represent a general emulator:
 struct Emulator{FT}
     "Machine learning tool, defined as a struct of type MachineLearningTool"
     machine_learning_tool::MachineLearningTool
-     "normalized, standardized, transformed pairs given the Boolean's normalize_inputs, standardize_outputs, truncate_svd "
+     "normalized, standardized, transformed pairs given the Boolean's normalize_inputs, standardize_outputs, retained_svd_frac "
     training_pairs::PairedDataContainer{FT}
     "mean of input; 1 × input_dim"
     input_mean::Array{FT}
@@ -78,8 +78,8 @@ struct Emulator{FT}
     standardize_outputs_factors
     "the singular value decomposition of obs_noise_cov, such that obs_noise_cov = decomposition.U * Diagonal(decomposition.S) * decomposition.Vt. NB: the svd may be reduced in dimensions"
     decomposition::Union{Decomposition, Nothing}
-    "Degree to which input SVD spectrum was truncated."
-    truncate_svd::FT
+    "Fraction of singular values kept in decomposition. A value of 1 implies full SVD spectrum information."
+    retained_svd_frac::FT
 end
 
 # Constructor for the Emulator Object
@@ -90,8 +90,8 @@ function Emulator(
     normalize_inputs::Bool = true,
     standardize_outputs::Bool = false,
     standardize_outputs_factors::Union{Array{FT,1}, Nothing}=nothing,
-    truncate_svd::FT=1.0
-    ) where {FT<:AbstractFloat}
+    retained_svd_frac::FT=1.0
+) where {FT<:AbstractFloat}
 
     # For Consistency checks
     input_dim, output_dim = size(input_output_pairs, 1)
@@ -131,10 +131,12 @@ function Emulator(
 
     #Transform data if obs_noise_cov available 
     # (if obs_noise_cov==nothing, transformed_data is equal to data)
-    decorrelated_training_outputs, decomposition = svd_transform(training_outputs, obs_noise_cov, truncate_svd=truncate_svd)
+    decorrelated_training_outputs, decomposition = svd_transform(
+        training_outputs, obs_noise_cov, retained_svd_frac=retained_svd_frac
+    )
 
     # write new pairs structure 
-    if truncate_svd<1.0
+    if retained_svd_frac < 1.0
         #note this changes the dimension of the outputs
         training_pairs = PairedDataContainer(training_inputs, decorrelated_training_outputs)
         input_dim, output_dim = size(training_pairs, 1)
@@ -153,7 +155,7 @@ function Emulator(
                         standardize_outputs,
                         standardize_outputs_factors,
                         decomposition,
-                        truncate_svd)
+                        retained_svd_frac)
 end    
 
 """
@@ -250,7 +252,8 @@ end
 """
     function reverse_standardize(emulator::Emulator, outputs, output_cov)
 
-reverse a previous standardization with the stored vector of factors (size equal to output dimension)
+reverse a previous standardization with the stored vector of factors (size equal to output 
+dimension)
 """
 function reverse_standardize(emulator::Emulator{FT}, outputs, output_cov) where {FT}
     if emulator.standardize_outputs
@@ -279,20 +282,20 @@ in S are sorted in descending order.
 function svd_transform(
     data::Array{FT, 2},
     obs_noise_cov; 
-    truncate_svd::FT=1.0) where {FT}
-
+    retained_svd_frac::FT=1.0
+) where {FT}
     if obs_noise_cov !== nothing
         @assert ndims(obs_noise_cov) == 2
     end
     if obs_noise_cov !== nothing
         # Truncate the SVD as a form of regularization
-	if truncate_svd<1.0 # this variable needs to be provided to this function
+	if retained_svd_frac<1.0 # this variable needs to be provided to this function
             # Perform SVD
             decomposition = svd(obs_noise_cov)
             # Find cutoff
             σ = decomposition.S
             σ_cumsum = cumsum(σ) / sum(σ);
-            P_cutoff = truncate_svd;
+            P_cutoff = retained_svd_frac;
             ind = findall(x->x>P_cutoff, σ_cumsum); k = ind[1]
             println("SVD truncated at k:")
             println(k)
@@ -322,27 +325,25 @@ end
 function svd_transform(
     data::Vector{FT}, 
     obs_noise_cov::Union{Array{FT, 2}, Nothing};
-    truncate_svd::FT=1.0) where {FT}
-
+    retained_svd_frac::FT=1.0) where {FT}
 """
 function svd_transform(
     data::Vector{FT}, 
     obs_noise_cov;
-    truncate_svd::FT=1.0) where {FT}
-
-   
+    retained_svd_frac::FT=1.0
+) where {FT}
     if obs_noise_cov !== nothing
         @assert ndims(obs_noise_cov) == 2
     end
     if obs_noise_cov !== nothing
         # Truncate the SVD as a form of regularization
-	if truncate_svd<1.0 # this variable needs to be provided to this function
+	if retained_svd_frac<1.0 # this variable needs to be provided to this function
             # Perform SVD
             decomposition = svd(obs_noise_cov)
             # Find cutoff
             σ = decomposition.S
             σ_cumsum = cumsum(σ) / sum(σ);
-            P_cutoff = truncate_svd;
+            P_cutoff = retained_svd_frac;
             ind = findall(x->x>P_cutoff, σ_cumsum); k = ind[1]
             println("SVD truncated at k:")
             println(k)

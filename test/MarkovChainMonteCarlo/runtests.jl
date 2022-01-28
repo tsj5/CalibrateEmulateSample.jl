@@ -34,7 +34,7 @@ function test_prior()
 end
 
 function test_em_gp_1(y, σ2_y, iopairs::PairedDataContainer; normalize_inputs=false, 
-    standardize_outputs=false, standardize_outputs_factors=nothing, truncate_svd=1.0
+    standardize_outputs=false, standardize_outputs_factors=nothing, retained_svd_frac=1.0
 )
     gppackage = GPJL()
     pred_type = YType()
@@ -51,7 +51,7 @@ function test_em_gp_1(y, σ2_y, iopairs::PairedDataContainer; normalize_inputs=f
         normalize_inputs=normalize_inputs,
         standardize_outputs=standardize_outputs,
         standardize_outputs_factors=standardize_outputs_factors, 
-        truncate_svd=truncate_svd
+        retained_svd_frac=retained_svd_frac
     )
     Emulators.optimize_hyperparameters!(em)
     return em
@@ -94,7 +94,7 @@ end
         em = test_em_gp_1(
             y, σ2_y, iopairs; 
             normalize_inputs=false, standardize_outputs=false, 
-            standardize_outputs_factors=nothing, truncate_svd=1.0
+            standardize_outputs_factors=nothing, retained_svd_frac=1.0
         )
         test_obs = MarkovChainMonteCarlo.to_decorrelated(obs_sample, em)
         # The MCMC stored a SVD-transformed sample,
@@ -106,7 +106,7 @@ end
         em_1 = test_em_gp_1(
             y, σ2_y, iopairs; 
             normalize_inputs=false,
-            standardize_outputs_factors=nothing, truncate_svd=1.0
+            standardize_outputs_factors=nothing, retained_svd_frac=1.0
         )
         new_step, posterior_mean_1 = mcmc_test_template(prior, σ2_y, em_1; mcmc_params...)
         @test isapprox(new_step, 0.5; atol=0.1)
@@ -119,7 +119,7 @@ end
         em_2 = test_em_gp_1(
             y, σ2_y, iopairs; 
             normalize_inputs=false,
-            standardize_outputs_factors=norm_factor, truncate_svd=0.95
+            standardize_outputs_factors=norm_factor, retained_svd_frac=0.95
         )
         _, posterior_mean_2 = mcmc_test_template(prior, σ2_y, em_2; mcmc_params...)
         # difference between mean_1 and mean_2 only from MCMC convergence
