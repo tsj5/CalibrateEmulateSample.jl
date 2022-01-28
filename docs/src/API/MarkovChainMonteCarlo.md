@@ -7,7 +7,7 @@ CurrentModule = CalibrateEmulateSample.MarkovChainMonteCarlo
 ```@docs
 MCMCWrapper
 EmulatorDensityModel
-MHTransition
+MCMCState
 VariableStepProposal
 VariableStepMHSampler
 MCMCProtocol

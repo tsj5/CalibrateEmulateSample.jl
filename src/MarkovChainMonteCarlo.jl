@@ -169,53 +169,58 @@ function VariableStepMHSampler(cov::Matrix{FT}, stepsize::FT = 1.0) where {FT<:A
 end
 
 # ------------------------------------------------------------------------------------------
-# Record MH accept/reject decision in MHTransition object
+# Record MH accept/reject decision in MCMCState object
 
 """
-    MHTransition
+    MCMCState
 
 Extend the basic `AdvancedMH.Transition` (which encodes the current state of the MC during
 sampling) with a boolean flag to record whether this state is new (arising from accepting a
 MH proposal) or old (from rejecting a proposal).
+
+# Fields
+$(DocStringExtensions.FIELDS)
 """
-struct MHTransition{T, L<:Real} <: AdvancedMH.AbstractTransition
+struct MCMCState{T, L<:Real} <: AdvancedMH.AbstractTransition
+    "Sampled value of the parameters at the current state of the MCMC chain."
     params :: T
-    lp :: L
-    accept :: Bool
+    "Log probability of `params`, as computed by the model using the prior."
+    log_density :: L
+    "Whether this state resulted from accepting a new MC proposal."
+    accepted :: Bool
 end
 
 # Boilerplate from AdvancedMH:
 # Store the new draw and its log density.
-function MHTransition(model::AdvancedMH.DensityModel, params, accept=true)
-    return MHTransition(params, logdensity(model, params), accept)
-end
-# Calculate the log density of the model given some parameterization.
-AdvancedMH.logdensity(model::AdvancedMH.DensityModel, t::MHTransition) = t.lp
+MCMCState(model::AdvancedMH.DensityModel, params, accepted=true) =
+    MCMCState(params, logdensity(model, params), accepted)
 
-# AdvancedMH.transition() is only called to create a new proposal, so create a MHTransition
-# with accept = true since that object will only be used if proposal is accepted.
+# Calculate the log density of the model given some parameterization.
+AdvancedMH.logdensity(model::AdvancedMH.DensityModel, t::MCMCState) = t.log_density
+
+# AdvancedMH.transition() is only called to create a new proposal, so create a MCMCState
+# with accepted = true since that object will only be used if proposal is accepted.
 function AdvancedMH.transition(
     sampler::AdvancedMH.MHSampler, 
     model::AdvancedMH.DensityModel, 
-    params, logdensity::Real
+    params, 
+    log_density::Real
 )
-    return MHTransition(params, logdensity, true)
+    return MCMCState(params, log_density, true)
 end
 
-# tell propose() what to do with `MHTransition`s
+# tell propose() what to do with `MCMCState`s
 function AdvancedMH.propose(
     rng::Random.AbstractRNG,
     sampler::AdvancedMH.MHSampler,
     model::AdvancedMH.DensityModel,
-    transition_prev::MHTransition,
+    current_state::MCMCState
 )
-    return AdvancedMH.propose(rng, sampler.proposal, model, transition_prev.params)
+    return AdvancedMH.propose(rng, sampler.proposal, model, current_state.params)
 end
 
-# Copy a MHTransition and set accept = false
-function reject_transition(t::MHTransition)
-    return MHTransition(t.params, t.lp, false)
-end
+# Copy a MCMCState and set accepted = false
+reject_transition(t::MCMCState) = MCMCState(t.params, t.log_density, false)
 
 # Define the other sampling steps.
 # Return a 2-tuple consisting of the next sample and the the next state.
@@ -225,35 +230,35 @@ function AbstractMCMC.step(
     rng::Random.AbstractRNG,
     model::AdvancedMH.DensityModel,
     sampler::AdvancedMH.MHSampler,
-    transition_prev::MHTransition;
+    current_state::MCMCState;
     kwargs...
 )
     # Generate a new proposal.
-    candidate = AdvancedMH.propose(rng, sampler, model, transition_prev)
+    new_params = AdvancedMH.propose(rng, sampler, model, current_state)
 
     # Calculate the log acceptance probability and the log density of the candidate.
-    logdensity_candidate = AdvancedMH.logdensity(model, candidate)
-    logα = logdensity_candidate - AdvancedMH.logdensity(model, transition_prev) +
-        AdvancedMH.logratio_proposal_density(sampler, transition_prev, candidate)
+    new_log_density = AdvancedMH.logdensity(model, new_params)
+    log_α = new_log_density - AdvancedMH.logdensity(model, current_state) +
+        AdvancedMH.logratio_proposal_density(sampler, current_state, new_params)
 
     # Decide whether to return the previous params or the new one.
-    transition = if -Random.randexp(rng) < logα
+    new_state = if -Random.randexp(rng) < log_α
         # accept
-        AdvancedMH.transition(sampler, model, candidate, logdensity_candidate)
+        AdvancedMH.transition(sampler, model, new_params, new_log_density)
     else
         # reject
-        reject_transition(transition_prev)
+        reject_transition(current_state)
     end
-    return transition, transition
+    return new_state, new_state
 end
 
 # ------------------------------------------------------------------------------------------
 # Extend the record-keeping methods defined in AdvancedMH to include the 
-# MHTransition.accept field added above.
+# MCMCState.accepted field added above.
 
 # A basic chains constructor that works with the Transition struct we defined.
 function AbstractMCMC.bundle_samples(
-    ts::Vector{<:MHTransition},
+    ts::Vector{<:MCMCState},
     model::AdvancedMH.DensityModel,
     sampler::AdvancedMH.MHSampler,
     state,
@@ -264,7 +269,7 @@ function AbstractMCMC.bundle_samples(
     kwargs...
 )
     # Turn all the transitions into a vector-of-vectors.
-    vals = [vcat(t.params, t.lp, t.accept) for t in ts]
+    vals = [vcat(t.params, t.log_density, t.accepted) for t in ts]
 
     # Check if we received any parameter names.
     if ismissing(param_names)
@@ -273,7 +278,7 @@ function AbstractMCMC.bundle_samples(
         # Generate new array to be thread safe.
         param_names = Symbol.(param_names)
     end
-    internal_names = [:log_p, :accept]
+    internal_names = [:log_density, :accepted]
 
     # Bundle everything up and return a MCChains.Chains struct.
     return MCMCChains.Chains(
@@ -284,7 +289,7 @@ function AbstractMCMC.bundle_samples(
 end
 
 function AbstractMCMC.bundle_samples(
-    ts::Vector{<:Vector{<:MHTransition}},
+    ts::Vector{<:Vector{<:MCMCState}},
     model::AdvancedMH.DensityModel,
     sampler::AdvancedMH.Ensemble,
     state,
@@ -298,7 +303,7 @@ function AbstractMCMC.bundle_samples(
     # NOTE: requires constant dimensionality.
     n_params = length(ts[1][1].params)
     nsamples = length(ts)
-    # add 2 parameters for log_p, accept
+    # add 2 parameters for :log_density, :accepted
     vals = Array{Float64, 3}(undef, nsamples, n_params + 2, sampler.n_walkers)
 
     for n in 1:nsamples
@@ -307,8 +312,8 @@ function AbstractMCMC.bundle_samples(
             for j in 1:n_params
                 vals[n, j, i] = walker.params[j]
             end
-            vals[n, n_params + 1, i] = walker.lp
-            vals[n, n_params + 2, i] = walker.accept
+            vals[n, n_params + 1, i] = walker.log_density
+            vals[n, n_params + 2, i] = walker.accepted
         end
     end
 
@@ -319,7 +324,7 @@ function AbstractMCMC.bundle_samples(
         # Generate new array to be thread safe.
         param_names = Symbol.(param_names)
     end
-    internal_names = [:log_p, :accept]
+    internal_names = [:log_density, :accepted]
 
     # Bundle everything up and return a MCChains.Chains struct.
     return MCMCChains.Chains(
@@ -500,10 +505,10 @@ end
 Fraction of MC proposals in `chain` which were accepted (according to Metropolis-Hastings.)
 """
 function accept_ratio(chain::MCMCChains.Chains)
-    if :accept in names(chain, :internals)
-        return mean(chain, :accept)
+    if :accepted in names(chain, :internals)
+        return mean(chain, :accepted)
     else
-        throw("MH `accept` not recorded in chain: $(names(chain, :internals)).")
+        throw("MH `accepted` not recorded in chain: $(names(chain, :internals)).")
     end
 end
 
