@@ -26,7 +26,7 @@ export
     get_stepsize,
     set_stepsize!,
     accept_ratio,
-    find_mcmc_step!,
+    optimize_stepsize!,
     get_posterior,
     sample
 
@@ -120,9 +120,9 @@ end
 # Boilerplate from AdvancedMH; 
 # AdvancedMH extends Base.rand to draw from Proposal objects
 const SymmetricVariableStepProposal{P, FT} = VariableStepProposal{true, P, FT}
-VariableStepProposal(proposal, step) = VariableStepProposal{false}(proposal, step)
-function VariableStepProposal{issymmetric}(proposal, step) where {issymmetric}
-    return VariableStepProposal{issymmetric, typeof(proposal), typeof(step)}(proposal, step)
+VariableStepProposal(proposal, stepsize) = VariableStepProposal{false}(proposal, stepsize)
+function VariableStepProposal{issymmetric}(proposal, stepsize) where {issymmetric}
+    return VariableStepProposal{issymmetric, typeof(proposal), typeof(stepsize)}(proposal, stepsize)
 end
 
 function AdvancedMH.propose(
@@ -381,7 +381,7 @@ decorrelation) that was applied in the Emulator. It creates and wraps an instanc
   struct using get_obs_sample.
 - `prior`: array of length `N_parameters` containing the parameters' prior distributions.
 - `em`: [`Emulator`](@ref) to sample from. 
-- `step`: MCMC step size.
+- `stepsize`: MCMC step size, applied as a scaling to the prior covariance.
 - `param_init`: Starting point for MCMC sampling.
 - `max_iter`: Number of MCMC steps to take during sampling.
 - `burnin`: Initial number of MCMC steps to discard (pre-convergence).
@@ -391,14 +391,14 @@ function MCMCWrapper(
     obs_sample::Vector{FT},
     prior::ParameterDistribution,
     em::Emulator;
-    step::FT,
+    stepsize::FT,
     init_params::Vector{FT},
     burnin::IT=0,
     kwargs...
 ) where {FT<:AbstractFloat, IT<:Integer}
     obs_sample = to_decorrelated(obs_sample, em)
     model = EmulatorDensityModel(prior, em, obs_sample)
-    sampler = VariableStepMHSampler(get_cov(prior), step)
+    sampler = VariableStepMHSampler(get_cov(prior), stepsize)
     sample_kwargs = (; # set defaults here
         :init_params => deepcopy(init_params),
         :param_names => get_name(prior),
@@ -516,8 +516,8 @@ function _find_mcmc_step_log(mcmc::MCMCWrapper)
     flush(stdout)
 end
 
-function _find_mcmc_step_log(it, step, acc_ratio, chain::MCMCChains.Chains)
-    str_ = @sprintf "%d step: %.3g acc rate: %.3g\n\tparams:" it step acc_ratio
+function _find_mcmc_step_log(it, stepsize, acc_ratio, chain::MCMCChains.Chains)
+    str_ = @sprintf "%d stepsize: %.3g acc rate: %.3g\n\tparams:" it stepsize acc_ratio
     for p in pairs(get(chain; section=:parameters)) # can't map() over Pairs
         str_ *= @sprintf " %s: %.3g" p.first last(p.second)
     end
@@ -526,36 +526,35 @@ function _find_mcmc_step_log(it, step, acc_ratio, chain::MCMCChains.Chains)
 end
 
 """
-    find_mcmc_step!(mcmc::MCMCWrapper; N = 2000, max_iter = 20, sample_kwargs...)
+    optimize_stepsize!(mcmc::MCMCWrapper; N = 2000, max_iter = 20, sample_kwargs...)
 
 Use heuristics to choose a stepsize for the [`VariableStepMHSampler`](@ref) element of 
 `mcmc`, namely that MC proposals should be accepted between 15% and 35% of the time. This
-both changes the stepsize in the `mcmc` object, and returns the stepsize found by this
-procedure.
+changes the stepsize in the `mcmc` object.
 """
-function find_mcmc_step!(mcmc::MCMCWrapper; N = 2000, max_iter = 20, sample_kwargs...)
+function optimize_stepsize!(mcmc::MCMCWrapper; N = 2000, max_iter = 20, sample_kwargs...)
     doubled = false
     halved = false
     _find_mcmc_step_log(mcmc)
     flush(stdout)
     for it = 1:max_iter
-        step = get_stepsize(mcmc)
+        stepsize = get_stepsize(mcmc)
         trial_chain = sample(mcmc, N; sample_kwargs...)
         acc_ratio = accept_ratio(trial_chain)
-        _find_mcmc_step_log(it, step, acc_ratio, trial_chain)
+        _find_mcmc_step_log(it, stepsize, acc_ratio, trial_chain)
         if doubled && halved
-            set_stepsize!(mcmc, 0.75 * step)
+            set_stepsize!(mcmc, 0.75 * stepsize)
             doubled = false
             halved = false
         elseif acc_ratio < 0.15
-            set_stepsize!(mcmc, 0.5 * step)
+            set_stepsize!(mcmc, 0.5 * stepsize)
             halved = true
         elseif acc_ratio > 0.35
-            set_stepsize!(mcmc, 2.0 * step)
+            set_stepsize!(mcmc, 2.0 * stepsize)
             doubled = true
         else
-            @printf "Set sampler to new stepsize: %.3g\n" step
-            return step
+            @printf "Set sampler to new stepsize: %.3g\n" stepsize
+            return
         end
     end
     throw("Failed to choose suitable stepsize in $(max_iter) iterations.")

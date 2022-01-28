@@ -59,16 +59,17 @@ end
 
 function mcmc_test_template(
     prior:: ParameterDistribution, σ2_y, em::Emulator;
-    MCMC_alg = EmulatorRWSampling(), obs_sample = 1.0, init_params = 3.0, init_step = 0.25
+    MCMC_alg = EmulatorRWSampling(), obs_sample = 1.0, init_params = 3.0, init_stepsize = 0.25
 )
     obs_sample = reshape(collect(obs_sample), 1) # scalar or Vector -> Vector
     init_params = reshape(collect(init_params), 1) # scalar or Vector -> Vector
     mcmc = MCMCWrapper(
-        MCMC_alg, obs_sample, prior, em; step=init_step, init_params=init_params
+        MCMC_alg, obs_sample, prior, em; stepsize=init_stepsize, init_params=init_params
     )
 
     # First let's run a short chain to determine a good step size
-    new_step = find_mcmc_step!(mcmc; N=5000)
+    optimize_stepsize!(mcmc; N=5000)
+    new_step = get_stepsize(mcmc)
 
     # Now begin the actual MCMC
     chain = sample(mcmc, 100_000; discard_initial = 1000)
@@ -85,7 +86,7 @@ end
         :MCMC_alg => EmulatorRWSampling(),
         :obs_sample => obs_sample,
         :init_params => [3.0],
-        :init_step => 0.5
+        :init_stepsize => 0.5
     )
     prior = test_prior()
     y, σ2_y, iopairs = test_data(; rng_seed = 42, n = 40, var_y = 0.05)

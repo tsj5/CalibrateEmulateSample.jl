@@ -15,6 +15,6 @@ EmulatorRWSampling
 get_stepsize
 set_stepsize!
 accept_ratio
-find_mcmc_step!
+optimize_stepsize!
 get_posterior
 ```
