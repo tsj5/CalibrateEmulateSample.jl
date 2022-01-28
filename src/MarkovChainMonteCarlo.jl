@@ -17,7 +17,7 @@ using AbstractMCMC
 import AdvancedMH
 
 export
-    EmulatorDensityModel,
+    EmulatorPosteriorModel,
     ScaledPriorProposal,
     PriorProposalMHSampler,
     MCMCProtocol,
@@ -66,7 +66,7 @@ end
 # Use emulated model in sampler
 
 """
-    EmulatorDensityModel
+    EmulatorPosteriorModel
 
 Factory which constructs `AdvancedMH.DensityModel` objects given a set of prior 
 distributions on the model parameters and an [`Emulator`](@ref), which encodes the 
@@ -74,7 +74,7 @@ log-likelihood of the data given parameters. Together this yields the log densit
 attempting to sample from with the MCMC, which is the role of the `DensityModel` class in 
 the `AbstractMCMC` interface.
 """
-function EmulatorDensityModel(
+function EmulatorPosteriorModel(
     prior::ParameterDistribution,
     em::Emulator{FT}, 
     obs_sample::Vector{FT}
@@ -348,7 +348,7 @@ abstract type MCMCProtocol end
 """
     EmulatorRWSampling
     
-[`MCMCProtocol`](@ref) which uses [`EmulatorDensityModel`](@ref) for the DensityModel (here, 
+[`MCMCProtocol`](@ref) which uses [`EmulatorPosteriorModel`](@ref) for the DensityModel (here, 
 emulated likelihood \\* prior) and [`ScaledPriorProposal`](@ref) for the sampler 
 (generator of proposals for Metropolis-Hastings).
 """
@@ -379,7 +379,7 @@ end
 
 Constructor for [`MCMCWrapper`](@ref) which performs the same standardization (SVD 
 decorrelation) that was applied in the Emulator. It creates and wraps an instance of 
-[`EmulatorDensityModel`](@ref), for sampling from the Emulator, and 
+[`EmulatorPosteriorModel`](@ref), for sampling from the Emulator, and 
 [`PriorProposalMHSampler`](@ref), for generating the MC proposals.
 
 - `obs_sample`: A single sample from the observations. Can, e.g., be picked from an Obs 
@@ -402,7 +402,7 @@ function MCMCWrapper(
     kwargs...
 ) where {FT<:AbstractFloat, IT<:Integer}
     obs_sample = to_decorrelated(obs_sample, em)
-    log_posterior_map = EmulatorDensityModel(prior, em, obs_sample)
+    log_posterior_map = EmulatorPosteriorModel(prior, em, obs_sample)
     mh_proposal_sampler = PriorProposalMHSampler(get_cov(prior), stepsize)
     sample_kwargs = (; # set defaults here
         :init_params => deepcopy(init_params),
