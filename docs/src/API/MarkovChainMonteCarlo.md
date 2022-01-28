@@ -8,8 +8,8 @@ CurrentModule = CalibrateEmulateSample.MarkovChainMonteCarlo
 MCMCWrapper
 EmulatorDensityModel
 MCMCState
-VariableStepProposal
-VariableStepMHSampler
+ScaledPriorProposal
+PriorProposalMHSampler
 MCMCProtocol
 EmulatorRWSampling
 get_stepsize
