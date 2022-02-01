@@ -349,60 +349,21 @@ function MCMCWrapper(
     return MCMCWrapper(prior, log_posterior_map, mh_proposal_sampler, sample_kwargs)
 end
 
-# ------------------------------------------------------------------------------------------
-# Define new methods extending AbstractMCMC.sample() using the MCMCWrapper object defined above.
+# Define new methods extending AbstractMCMC.sample() using the MCMCWrapper object.
 
+# All cases where rng given
+function sample(rng::Random.AbstractRNG, mcmc::MCMCWrapper, args...; kwargs...)
+    # any explicit function kwargs override defaults in mcmc object
+    kwargs = merge(mcmc.sample_kwargs, NamedTuple(kwargs))
+    return AbstractMCMC.mcmcsample(
+        rng, mcmc.log_posterior_map, mcmc.mh_proposal_sampler, args...; kwargs...
+    )
+end
 # use default rng if none given
-function sample(mcmc::MCMCWrapper, args...; kwargs...)
-    return sample(Random.GLOBAL_RNG, mcmc, args...; kwargs...)
-end
-
-# vanilla case
-function sample(
-    rng::Random.AbstractRNG,
-    mcmc::MCMCWrapper,
-    N::Integer;
-    kwargs...
-)
-    # explicit function kwargs override what's in mcmc
-    kwargs = merge(mcmc.sample_kwargs, NamedTuple(kwargs))
-    return AbstractMCMC.mcmcsample(
-        rng, mcmc.log_posterior_map, mcmc.mh_proposal_sampler, N; kwargs...
-    )
-end
-
-# case where we pass an isdone() Function for early termination
-function sample(
-    rng::Random.AbstractRNG,
-    mcmc::MCMCWrapper,
-    isdone;
-    kwargs...
-)
-    # explicit function kwargs override what's in mcmc
-    kwargs = merge(mcmc.sample_kwargs, NamedTuple(kwargs))
-    return AbstractMCMC.mcmcsample(
-        rng, mcmc.log_posterior_map, mcmc.mh_proposal_sampler, isdone; kwargs...
-    )
-end
-
-# parallel case
-function sample(
-    rng::Random.AbstractRNG,
-    mcmc::MCMCWrapper,
-    parallel::AbstractMCMC.AbstractMCMCEnsemble,
-    N::Integer,
-    nchains::Integer;
-    kwargs...
-)
-    # explicit function kwargs override what's in mcmc
-    kwargs = merge(mcmc.sample_kwargs, NamedTuple(kwargs))
-    return AbstractMCMC.mcmcsample(
-        rng, mcmc.log_posterior_map, mcmc.mh_proposal_sampler, parallel, N, nchains; kwargs...
-    )
-end
+sample(mcmc::MCMCWrapper, args...; kwargs...) = sample(Random.GLOBAL_RNG, mcmc, args...; kwargs...)
 
 # ------------------------------------------------------------------------------------------
-# Search for a MCMC stepsize that yields a decent MH acceptance rate
+# Search for a MCMC stepsize that yields a good MH acceptance rate
 
 """
     accept_ratio(chain::MCMCChains.Chains)
