@@ -68,11 +68,10 @@ function mcmc_test_template(
     )
 
     # First let's run a short chain to determine a good step size
-    optimize_stepsize!(mcmc; N=5000)
-    new_step = get_stepsize(mcmc)
+    new_step = optimize_stepsize!(mcmc; init_stepsize=init_stepsize, N=5000)
 
     # Now begin the actual MCMC
-    chain = sample(mcmc, 100_000; discard_initial = 1000)
+    chain = sample(mcmc, 100_000; stepsize = new_step, discard_initial = 1000)
     posterior_distribution = get_posterior(mcmc, chain)      
     #post_mean = mean(posterior, dims=1)[1]
     posterior_mean = get_mean(posterior_distribution)

@@ -241,15 +241,12 @@ println("initial parameters: ", u0)
 
 # First let's run a short chain to determine a good step size
 yt_sample = truth_sample
-mcmc = MCMCWrapper(
-    EmulatorRWSampling(), yt_sample, priors, emulator; stepsize=0.1, init_params=u0
-)
-MarkovChainMonteCarlo.optimize_stepsize!(mcmc; N=2000, discard_initial=0)
-new_step = get_stepsize(mcmc)
+mcmc = MCMCWrapper(EmulatorRWSampling(), yt_sample, priors, emulator; init_params = u0)
+new_step = optimize_stepsize!(mcmc; init_stepsize = 0.1, N=2000, discard_initial=0)
 
 # Now begin the actual MCMC
 println("Begin MCMC - with step size ", new_step)
-chain = MarkovChainMonteCarlo.sample(mcmc, 100_000; discard_initial=1_000)
+chain = MarkovChainMonteCarlo.sample(mcmc, 100_000; stepsize = new_step, discard_initial=1_000)
 posterior = MarkovChainMonteCarlo.get_posterior(mcmc, chain)      
 
 post_mean = get_mean(posterior)

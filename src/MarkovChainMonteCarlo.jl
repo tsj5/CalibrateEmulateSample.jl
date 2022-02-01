@@ -18,13 +18,10 @@ import AdvancedMH
 
 export
     EmulatorPosteriorModel,
-    ScaledPriorProposal,
     PriorProposalMHSampler,
     MCMCProtocol,
     EmulatorRWSampling,
     MCMCWrapper,
-    get_stepsize,
-    set_stepsize!,
     accept_ratio,
     optimize_stepsize!,
     get_posterior,
@@ -94,81 +91,6 @@ function EmulatorPosteriorModel(
 end
 
 # ------------------------------------------------------------------------------------------
-# Extend proposal distribution object to allow for tunable stepsize
-
-"""
-    ScaledPriorProposal
-
-`AdvancedMH.Proposal` object responsible for generating the random walk steps used for new 
-parameter proposals in the Metropolis-Hastings algorithm. Adds a separately adjustable 
-`stepsize` parameter to the implementation from 
-[AdvancedMH](https://github.com/TuringLang/AdvancedMH.jl).
-
-This is allowed to be mutable, in order to dynamically change the `stepsize`. Since no
-sampler state gets stored here, this choice is made out of convenience, not necessity.
-
-# Fields
-$(DocStringExtensions.FIELDS)
-"""
-mutable struct ScaledPriorProposal{issymmetric, P, FT<:AbstractFloat} <: AdvancedMH.Proposal{P}
-    "Distribution from which to draw IID random walk steps. Assumed zero-mean."
-    proposal::P
-    "Scaling factor applied to all samples drawn from `proposal`."
-    stepsize::FT
-end
-
-# Boilerplate from AdvancedMH; 
-# AdvancedMH extends Base.rand to draw from Proposal objects
-const SymmetricVariableStepProposal{P, FT} = ScaledPriorProposal{true, P, FT}
-ScaledPriorProposal(proposal, stepsize) = ScaledPriorProposal{false}(proposal, stepsize)
-function ScaledPriorProposal{issymmetric}(proposal, stepsize) where {issymmetric}
-    return ScaledPriorProposal{issymmetric, typeof(proposal), typeof(stepsize)}(proposal, stepsize)
-end
-
-function AdvancedMH.propose(
-    rng::Random.AbstractRNG,
-    proposal::ScaledPriorProposal{issymmetric, <:Union{Distribution,AbstractArray}, <:AbstractFloat},
-    ::AbstractMCMC.AbstractModel
-) where {issymmetric}
-    return proposal.stepsize * rand(rng, proposal)
-end
-
-function AdvancedMH.propose(
-    rng::Random.AbstractRNG,
-    proposal::ScaledPriorProposal{issymmetric, <:Union{Distribution,AbstractArray}, <:AbstractFloat},
-    ::AbstractMCMC.AbstractModel,
-    t
-) where {issymmetric}
-    return t + proposal.stepsize * rand(rng, proposal)
-end
-
-# q-factor used in density ratios: this *only* comes into play for samplers that don't obey
-# detailed balance. For `MetropolisHastings` sampling this method isn't used.
-function AdvancedMH.q(
-    proposal::ScaledPriorProposal{issymmetric, <:Union{Distribution,AbstractArray}, <:AbstractFloat},
-    t,
-    t_cond
-) where {issymmetric}
-    return logpdf(proposal, (t - t_cond) / proposal.stepsize)
-end
-logratio_proposal_density(::ScaledPriorProposal{true}, state, candidate) = 0
-
-"""
-    PriorProposalMHSampler
-
-Constructor for a Metropolis-Hastings sampler that uses the [`ScaledPriorProposal`](@ref)
-Proposal object.
-
-- `cov` - fixed covariance used to generate multivariate normal RW steps.
-- `stepsize` - MH stepsize, applied as a constant uniform scaling to all samples. 
-"""
-function PriorProposalMHSampler(cov::Matrix{FT}, stepsize::FT = 1.0) where {FT<:AbstractFloat}
-    return AdvancedMH.MetropolisHastings(
-        ScaledPriorProposal{false}(MvNormal(zeros(size(cov)[1]), cov), stepsize)
-    )
-end
-
-# ------------------------------------------------------------------------------------------
 # Record MH accept/reject decision in MCMCState object
 
 """
@@ -209,32 +131,31 @@ function AdvancedMH.transition(
     return MCMCState(params, log_density, true)
 end
 
-# tell propose() what to do with `MCMCState`s
+# tell propose() what to do with `MCMCState`s; scale by stepsize if given
 function AdvancedMH.propose(
     rng::Random.AbstractRNG,
     sampler::AdvancedMH.MHSampler,
     model::AdvancedMH.DensityModel,
-    current_state::MCMCState
-)
-    return AdvancedMH.propose(rng, sampler.proposal, model, current_state.params)
+    current_state::MCMCState;
+    stepsize::FT = 1.0
+) where {FT<:AbstractFloat}
+    delta_params = AdvancedMH.propose(rng, sampler.proposal, model)
+    return current_state.params + stepsize * delta_params
 end
 
 # Copy a MCMCState and set accepted = false
 reject_transition(t::MCMCState) = MCMCState(t.params, t.log_density, false)
 
-# Define the other sampling steps.
-# Return a 2-tuple consisting of the next sample and the the next state.
-# In this case they are identical, and either a new proposal (if accepted)
-# or the previous proposal (if not accepted).
 function AbstractMCMC.step(
     rng::Random.AbstractRNG,
     model::AdvancedMH.DensityModel,
     sampler::AdvancedMH.MHSampler,
     current_state::MCMCState;
+    stepsize::FT = 1.0,
     kwargs...
-)
+) where {FT<:AbstractFloat}
     # Generate a new proposal.
-    new_params = AdvancedMH.propose(rng, sampler, model, current_state)
+    new_params = AdvancedMH.propose(rng, sampler, model, current_state; stepsize = stepsize)
 
     # Calculate the log acceptance probability and the log density of the candidate.
     new_log_density = AdvancedMH.logdensity(model, new_params)
@@ -249,6 +170,8 @@ function AbstractMCMC.step(
         # reject
         reject_transition(current_state)
     end
+    # Return a 2-tuple consisting of the next sample and the the next state.
+    # In this case (MH obeying detailed balance) they are identical.
     return new_state, new_state
 end
 
@@ -338,6 +261,19 @@ end
 # Top-level object to contain model and sampler (but not state)
 
 """
+    PriorProposalMHSampler
+
+Constructor for a Metropolis-Hastings sampler that generates proposals for new parameters 
+based on the covariance of the `prior` object.
+"""
+function PriorProposalMHSampler(prior::ParameterDistribution)
+    cov = get_cov(prior)
+    return AdvancedMH.MetropolisHastings(
+        AdvancedMH.RandomWalkProposal(MvNormal(zeros(size(cov)[1]), cov))
+    )
+end
+
+"""
     MCMCProtocol
 
 Type used to dispatch different methods of the [`MCMCWrapper`](@ref) constructor, 
@@ -349,7 +285,7 @@ abstract type MCMCProtocol end
     EmulatorRWSampling
     
 [`MCMCProtocol`](@ref) which uses [`EmulatorPosteriorModel`](@ref) for the DensityModel (here, 
-emulated likelihood \\* prior) and [`ScaledPriorProposal`](@ref) for the sampler 
+emulated likelihood \\* prior) and [`PriorProposalMHSampler`](@ref) for the sampler 
 (generator of proposals for Metropolis-Hastings).
 """
 struct EmulatorRWSampling <: MCMCProtocol end
@@ -396,14 +332,13 @@ function MCMCWrapper(
     obs_sample::Vector{FT},
     prior::ParameterDistribution,
     em::Emulator;
-    stepsize::FT,
     init_params::Vector{FT},
     burnin::IT=0,
     kwargs...
 ) where {FT<:AbstractFloat, IT<:Integer}
     obs_sample = to_decorrelated(obs_sample, em)
     log_posterior_map = EmulatorPosteriorModel(prior, em, obs_sample)
-    mh_proposal_sampler = PriorProposalMHSampler(get_cov(prior), stepsize)
+    mh_proposal_sampler = PriorProposalMHSampler(prior)
     sample_kwargs = (; # set defaults here
         :init_params => deepcopy(init_params),
         :param_names => get_name(prior),
@@ -412,42 +347,6 @@ function MCMCWrapper(
     )
     sample_kwargs = merge(sample_kwargs, kwargs) # override defaults with any explicit values
     return MCMCWrapper(prior, log_posterior_map, mh_proposal_sampler, sample_kwargs)
-end
-
-"""
-    get_stepsize
-
-Returns the current MH `stepsize`, assuming we're using [`ScaledPriorProposal`](@ref) to
-generate proposals. Throws an error for Samplers/Proposals without a `stepsize` field.
-"""
-function get_stepsize(mcmc::MCMCWrapper)
-    if hasproperty(mcmc.mh_proposal_sampler, :proposal)
-        if hasproperty(mcmc.mh_proposal_sampler.proposal, :stepsize)
-            return mcmc.mh_proposal_sampler.proposal.stepsize
-        else
-            throw("Proposal is of unrecognized type: $(typeof(mcmc.mh_proposal_sampler.proposal)).")
-        end
-    else
-        throw("Sampler is of unrecognized type: $(typeof(mcmc.mh_proposal_sampler)).")
-    end
-end
-
-"""
-    set_stepsize!
-
-Sets the MH `stepsize` to a new value, assuming we're using [`ScaledPriorProposal`](@ref) 
-to generate proposals. Throws an error for Samplers/Proposals without a `stepsize` field.
-"""
-function set_stepsize!(mcmc::MCMCWrapper, new_step)
-    if hasproperty(mcmc.mh_proposal_sampler, :proposal)
-        if hasproperty(mcmc.mh_proposal_sampler.proposal, :stepsize)
-            mcmc.mh_proposal_sampler.proposal.stepsize = new_step
-        else
-            throw("Proposal is of unrecognized type: $(typeof(mcmc.mh_proposal_sampler.proposal)).")
-        end
-    else
-        throw("Sampler is of unrecognized type: $(typeof(mcmc.mh_proposal_sampler)).")
-    end
 end
 
 # ------------------------------------------------------------------------------------------
@@ -537,35 +436,36 @@ function _find_mcmc_step_log(it, stepsize, acc_ratio, chain::MCMCChains.Chains)
 end
 
 """
-    optimize_stepsize!(mcmc::MCMCWrapper; N = 2000, max_iter = 20, sample_kwargs...)
+    optimize_stepsize!(mcmc::MCMCWrapper; init_stepsize = 1.0, N = 2000, max_iter = 20, sample_kwargs...)
 
 Use heuristics to choose a stepsize for the [`PriorProposalMHSampler`](@ref) element of 
-`mcmc`, namely that MC proposals should be accepted between 15% and 35% of the time. This
-changes the stepsize in the `mcmc` object.
+`mcmc`, namely that MC proposals should be accepted between 15% and 35% of the time.
 """
-function optimize_stepsize!(mcmc::MCMCWrapper; N = 2000, max_iter = 20, sample_kwargs...)
+function optimize_stepsize!(
+    mcmc::MCMCWrapper; 
+    init_stepsize = 1.0, N = 2000, max_iter = 20, sample_kwargs...
+)
     doubled = false
     halved = false
     _find_mcmc_step_log(mcmc)
-    flush(stdout)
     for it = 1:max_iter
-        stepsize = get_stepsize(mcmc)
-        trial_chain = sample(mcmc, N; sample_kwargs...)
+        stepsize = init_stepsize
+        trial_chain = sample(mcmc, N; stepsize=stepsize, sample_kwargs...)
         acc_ratio = accept_ratio(trial_chain)
         _find_mcmc_step_log(it, stepsize, acc_ratio, trial_chain)
         if doubled && halved
-            set_stepsize!(mcmc, 0.75 * stepsize)
+            stepsize = 0.75 * stepsize
             doubled = false
             halved = false
         elseif acc_ratio < 0.15
-            set_stepsize!(mcmc, 0.5 * stepsize)
+            stepsize = 0.5 * stepsize
             halved = true
         elseif acc_ratio > 0.35
-            set_stepsize!(mcmc, 2.0 * stepsize)
+            stepsize = 2.0 * stepsize
             doubled = true
         else
             @printf "Set sampler to new stepsize: %.3g\n" stepsize
-            return
+            return stepsize
         end
     end
     throw("Failed to choose suitable stepsize in $(max_iter) iterations.")
