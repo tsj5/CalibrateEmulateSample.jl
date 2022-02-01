@@ -343,7 +343,7 @@ println("initial parameters: ", u0)
 # First let's run a short chain to determine a good step size
 yt_sample = truth_sample
 mcmc = MCMCWrapper(EmulatorRWSampling(), yt_sample, priors, emulator; init_params = u0)
-new_step = optimize_stepsize!(mcmc; init_stepsize = 0.1, N=2000, discard_initial=0)
+new_step = optimize_stepsize(mcmc; init_stepsize = 0.1, N=2000, discard_initial=0)
 
 # Now begin the actual MCMC
 println("Begin MCMC - with step size ", new_step)

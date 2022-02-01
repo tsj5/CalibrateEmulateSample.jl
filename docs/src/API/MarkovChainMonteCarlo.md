@@ -12,6 +12,6 @@ PriorProposalMHSampler
 MCMCProtocol
 EmulatorRWSampling
 accept_ratio
-optimize_stepsize!
+optimize_stepsize
 get_posterior
 ```

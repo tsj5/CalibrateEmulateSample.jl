@@ -23,7 +23,7 @@ export
     EmulatorRWSampling,
     MCMCWrapper,
     accept_ratio,
-    optimize_stepsize!,
+    optimize_stepsize,
     get_posterior,
     sample
 
@@ -397,12 +397,12 @@ function _find_mcmc_step_log(it, stepsize, acc_ratio, chain::MCMCChains.Chains)
 end
 
 """
-    optimize_stepsize!(mcmc::MCMCWrapper; init_stepsize = 1.0, N = 2000, max_iter = 20, sample_kwargs...)
+    optimize_stepsize(mcmc::MCMCWrapper; init_stepsize = 1.0, N = 2000, max_iter = 20, sample_kwargs...)
 
 Use heuristics to choose a stepsize for the [`PriorProposalMHSampler`](@ref) element of 
 `mcmc`, namely that MC proposals should be accepted between 15% and 35% of the time.
 """
-function optimize_stepsize!(
+function optimize_stepsize(
     mcmc::MCMCWrapper; 
     init_stepsize = 1.0, N = 2000, max_iter = 20, sample_kwargs...
 )

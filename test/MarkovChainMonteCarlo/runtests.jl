@@ -68,7 +68,7 @@ function mcmc_test_template(
     )
 
     # First let's run a short chain to determine a good step size
-    new_step = optimize_stepsize!(mcmc; init_stepsize=init_stepsize, N=5000)
+    new_step = optimize_stepsize(mcmc; init_stepsize=init_stepsize, N=5000)
 
     # Now begin the actual MCMC
     chain = sample(mcmc, 100_000; stepsize = new_step, discard_initial = 1000)
