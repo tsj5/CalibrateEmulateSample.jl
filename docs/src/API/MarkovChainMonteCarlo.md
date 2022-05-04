@@ -1,7 +1,8 @@
-# Utilities
+# MarkovChainMonteCarlo
 
-```@meta
-CurrentModule = CalibrateEmulateSample.MarkovChainMonteCarlo
+```@autodocs
+Modules = [CalibrateEmulateSample.MarkovChainMonteCarlo]
+Order   = [:module, :type, :function]
 ```
 
 ```@docs

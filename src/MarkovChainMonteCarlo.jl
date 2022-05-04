@@ -1,7 +1,8 @@
+# refactor-Sample
 module MarkovChainMonteCarlo
 
 using ..Emulators
-using ..ParameterDistributionStorage
+using ..ParameterDistributions
 
 import Distributions: sample # Reexport sample()
 using Distributions
@@ -33,12 +34,12 @@ export
 # access to obs_noise_cov
 
 """
-    to_decorrelated(data::Array{FT, 2}, em::Emulator)
+$(DocStringExtensions.TYPEDSIGNATURES)
 
 Transform samples from the original (correlated) coordinate system to the SVD-decorrelated
 coordinate system used by Emulator.
 """
-function to_decorrelated(data::Array{FT, 2}, em::Emulator{FT}) where {FT<:AbstractFloat}
+function to_decorrelated(data::AbstractMatrix{FT}, em::Emulator{FT}) where {FT<:AbstractFloat}
     if em.standardize_outputs && em.standardize_outputs_factors !== nothing 
         # standardize() data by scale factors, if they were given
         data = data ./ em.standardize_outputs_factors
@@ -53,9 +54,9 @@ function to_decorrelated(data::Array{FT, 2}, em::Emulator{FT}) where {FT<:Abstra
         return data
     end
 end
-function to_decorrelated(data::Vector{FT}, bem::Emulator{FT}) where {FT<:AbstractFloat}
+function to_decorrelated(data::AbstractVector{FT}, em::Emulator{FT}) where {FT<:AbstractFloat}
     # method for single sample
-    out_data = to_decorrelated(reshape(data, :, 1), bem)
+    out_data = to_decorrelated(reshape(data, :, 1), em)
     return vec(out_data)
 end
 
@@ -63,7 +64,7 @@ end
 # Use emulated model in sampler
 
 """
-    EmulatorPosteriorModel
+$(DocStringExtensions.TYPEDSIGNATURES)
 
 Factory which constructs `AdvancedMH.DensityModel` objects given a set of prior 
 distributions on the model parameters and an [`Emulator`](@ref), which encodes the 
@@ -74,7 +75,7 @@ the `AbstractMCMC` interface.
 function EmulatorPosteriorModel(
     prior::ParameterDistribution,
     em::Emulator{FT}, 
-    obs_sample::Vector{FT}
+    obs_sample::AbstractVector{FT}
 ) where {FT <: AbstractFloat}
     # recall predict() written to return multiple `N_samples`: expects input to be a Matrix
     # with `N_samples` columns. Returned g is likewise a Matrix, and g_cov is a Vector of 
@@ -94,14 +95,14 @@ end
 # Record MH accept/reject decision in MCMCState object
 
 """
-    MCMCState
+$(DocStringExtensions.TYPEDEF)
 
 Extend the basic `AdvancedMH.Transition` (which encodes the current state of the MC during
 sampling) with a boolean flag to record whether this state is new (arising from accepting a
 MH proposal) or old (from rejecting a proposal).
 
 # Fields
-$(DocStringExtensions.FIELDS)
+$(DocStringExtensions.TYPEDFIELDS)
 """
 struct MCMCState{T, L<:Real} <: AdvancedMH.AbstractTransition
     "Sampled value of the parameters at the current state of the MCMC chain."
@@ -261,20 +262,20 @@ end
 # Top-level object to contain model and sampler (but not state)
 
 """
-    PriorProposalMHSampler
+$(DocStringExtensions.TYPEDSIGNATURES)
 
 Constructor for a Metropolis-Hastings sampler that generates proposals for new parameters 
 based on the covariance of the `prior` object.
 """
 function PriorProposalMHSampler(prior::ParameterDistribution)
-    cov = get_cov(prior)
+    Σ = ParameterDistributions.cov(prior)
     return AdvancedMH.MetropolisHastings(
-        AdvancedMH.RandomWalkProposal(MvNormal(zeros(size(cov)[1]), cov))
+        AdvancedMH.RandomWalkProposal(MvNormal(zeros(size(Σ)[1]), Σ))
     )
 end
 
 """
-    MCMCProtocol
+$(DocStringExtensions.TYPEDEF)
 
 Type used to dispatch different methods of the [`MCMCWrapper`](@ref) constructor, 
 corresponding to different choices of DensityModel and Sampler.
@@ -282,7 +283,7 @@ corresponding to different choices of DensityModel and Sampler.
 abstract type MCMCProtocol end
 
 """
-    EmulatorRWSampling
+$(DocStringExtensions.TYPEDEF)
     
 [`MCMCProtocol`](@ref) which uses [`EmulatorPosteriorModel`](@ref) for the DensityModel (here, 
 emulated likelihood \\* prior) and [`PriorProposalMHSampler`](@ref) for the sampler 
@@ -291,13 +292,13 @@ emulated likelihood \\* prior) and [`PriorProposalMHSampler`](@ref) for the samp
 struct EmulatorRWSampling <: MCMCProtocol end
 
 """
-    MCMCWrapper
+$(DocStringExtensions.TYPEDEF)
 
 Top-level object to hold the prior, DensityModel and Sampler objects, as well as 
 arguments to be passed to the sampling function.
 
 # Fields
-$(DocStringExtensions.FIELDS)
+$(DocStringExtensions.TYPEDFIELDS)
 """
 struct MCMCWrapper
     "`EnsembleKalmanProcess.ParameterDistribution` object describing the prior distribution on parameter values."
@@ -311,7 +312,7 @@ struct MCMCWrapper
 end
 
 """
-    MCMCWrapper
+$(DocStringExtensions.TYPEDSIGNATURES)
 
 Constructor for [`MCMCWrapper`](@ref) which performs the same standardization (SVD 
 decorrelation) that was applied in the Emulator. It creates and wraps an instance of 
@@ -323,16 +324,15 @@ decorrelation) that was applied in the Emulator. It creates and wraps an instanc
 - `prior`: array of length `N_parameters` containing the parameters' prior distributions.
 - `em`: [`Emulator`](@ref) to sample from. 
 - `stepsize`: MCMC step size, applied as a scaling to the prior covariance.
-- `param_init`: Starting point for MCMC sampling.
-- `max_iter`: Number of MCMC steps to take during sampling.
+- `init_params`: Starting point for MCMC sampling.
 - `burnin`: Initial number of MCMC steps to discard (pre-convergence).
 """
 function MCMCWrapper(
     ::EmulatorRWSampling,
-    obs_sample::Vector{FT},
+    obs_sample::AbstractVector{FT},
     prior::ParameterDistribution,
     em::Emulator;
-    init_params::Vector{FT},
+    init_params::AbstractVector{FT},
     burnin::IT=0,
     kwargs...
 ) where {FT<:AbstractFloat, IT<:Integer}
@@ -366,7 +366,7 @@ sample(mcmc::MCMCWrapper, args...; kwargs...) = sample(Random.GLOBAL_RNG, mcmc, 
 # Search for a MCMC stepsize that yields a good MH acceptance rate
 
 """
-    accept_ratio(chain::MCMCChains.Chains)
+$(DocStringExtensions.TYPEDSIGNATURES)
 
 Fraction of MC proposals in `chain` which were accepted (according to Metropolis-Hastings.)
 """
@@ -397,13 +397,13 @@ function _find_mcmc_step_log(it, stepsize, acc_ratio, chain::MCMCChains.Chains)
 end
 
 """
-    optimize_stepsize(mcmc::MCMCWrapper; init_stepsize = 1.0, N = 2000, max_iter = 20, sample_kwargs...)
+$(DocStringExtensions.TYPEDSIGNATURES)
 
 Use heuristics to choose a stepsize for the [`PriorProposalMHSampler`](@ref) element of 
 `mcmc`, namely that MC proposals should be accepted between 15% and 35% of the time.
 """
 function optimize_stepsize(
-    mcmc::MCMCWrapper; 
+    rng::Random.AbstractRNG, mcmc::MCMCWrapper; 
     init_stepsize = 1.0, N = 2000, max_iter = 20, sample_kwargs...
 )
     doubled = false
@@ -431,9 +431,12 @@ function optimize_stepsize(
     end
     throw("Failed to choose suitable stepsize in $(max_iter) iterations.")
 end
+# use default rng if none given
+optimize_stepsize(mcmc::MCMCWrapper; kwargs...) = optimize_stepsize(Random.GLOBAL_RNG, mcmc; kwargs...)
+
 
 """
-    get_posterior
+$(DocStringExtensions.TYPEDSIGNATURES)
 
 Return a `ParameterDistribution` object corresponding to the empirical distribution of the 
 MC samples.

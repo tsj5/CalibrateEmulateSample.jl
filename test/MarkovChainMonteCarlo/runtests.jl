@@ -5,21 +5,21 @@ using GaussianProcesses
 using Test
 
 using CalibrateEmulateSample.MarkovChainMonteCarlo
-using CalibrateEmulateSample.ParameterDistributionStorage
+using CalibrateEmulateSample.ParameterDistributions
 using CalibrateEmulateSample.Emulators
-using CalibrateEmulateSample.DataStorage
+using CalibrateEmulateSample.DataContainers
 
-function test_data(; rng_seed = 42, n = 40, var_y = 0.05, rest...)
+function test_data(; rng_seed = 41, n = 20, var_y = 0.05, rest...)
     # Seed for pseudo-random number generator
-    Random.seed!(rng_seed)
+    rng = Random.MersenneTwister(rng_seed)
     # We need a GaussianProcess to run MarkovChainMonteCarlo, so let's reconstruct the one 
     # that's tested in test/GaussianProcesses/runtests.jl Case 1
-    # n = 20                                       # number of training points
-    x = 2π * rand(Float64, (1, n))                 # predictors/features: 1 × n
+    n = 40                                              # number of training points
+    x = 2π * rand(rng, Float64, (1, n))                 # predictors/features: 1 × n
     σ2_y = reshape([var_y], 1, 1)
-    y = sin.(x) + rand(Normal(0, σ2_y[1]), (1, n)) # predictands/targets: 1 × n
+    y = sin.(x) + rand(rng, Normal(0, σ2_y[1]), (1, n)) # predictands/targets: 1 × n
 
-    return y, σ2_y, PairedDataContainer(x, y, data_are_columns=true)
+    return y, σ2_y, PairedDataContainer(x, y, data_are_columns = true), rng
 end
 
 function test_prior()
@@ -27,46 +27,73 @@ function test_prior()
     umin = -1.0
     umax = 6.0
     #prior = [Priors.Prior(Uniform(umin, umax), "u")]  # prior on u
-    prior_dist = Parameterized(Normal(0,1))
+    prior_dist = Parameterized(Normal(0, 1))
     prior_constraint = bounded(umin, umax)
     prior_name = "u"
     return ParameterDistribution(prior_dist, prior_constraint, prior_name)
 end
 
-function test_em_gp_1(y, σ2_y, iopairs::PairedDataContainer; normalize_inputs=false, 
-    standardize_outputs=false, standardize_outputs_factors=nothing, retained_svd_frac=1.0
-)
+function test_gp_1(y, σ2_y, iopairs::PairedDataContainer; norm_factor = nothing)
     gppackage = GPJL()
     pred_type = YType()
-    # Construct kernel: Squared exponential kernel (note that hyperparameters are on log scale)
+    # Construct kernel:
+    # Squared exponential kernel (note that hyperparameters are on log scale)
     # with observational noise
     GPkernel = SE(log(1.0), log(1.0))
     gp = GaussianProcess(
-        gppackage;
-        kernel=GPkernel, noise_learn=true, prediction_type=pred_type
-    ) 
+        gppackage; 
+        kernel = GPkernel, noise_learn = true, prediction_type = pred_type
+    )
     em = Emulator(
-        gp, iopairs;
-        obs_noise_cov=σ2_y, 
-        normalize_inputs=normalize_inputs,
-        standardize_outputs=standardize_outputs,
-        standardize_outputs_factors=standardize_outputs_factors, 
-        retained_svd_frac=retained_svd_frac
+        gp,
+        iopairs;
+        obs_noise_cov = σ2_y,
+        normalize_inputs = false,
+        standardize_outputs = false,
+        standardize_outputs_factors = norm_factor,
+        retained_svd_frac = 1.0,
     )
     Emulators.optimize_hyperparameters!(em)
     return em
 end
 
-function mcmc_test_template(
-    prior:: ParameterDistribution, σ2_y, em::Emulator;
-    MCMC_alg = EmulatorRWSampling(), obs_sample = 1.0, init_params = 3.0, init_stepsize = 0.25
+function test_gp_2(y, σ2_y, iopairs::PairedDataContainer; norm_factor = nothing)
+    gppackage = GPJL()
+    pred_type = YType()
+    # Construct kernel:
+    # Squared exponential kernel (note that hyperparameters are on log scale)
+    # with observational noise
+    GPkernel = SE(log(1.0), log(1.0))
+    gp = GaussianProcess(
+        gppackage; 
+        kernel = GPkernel, noise_learn = true, prediction_type = pred_type
+    )
+    em = Emulator(
+        gp,
+        iopairs;
+        obs_noise_cov = σ2_y,
+        normalize_inputs = false,
+        standardize_outputs = true,
+        standardize_outputs_factors = norm_factor,
+        retained_svd_frac = 0.9,
+    )
+    Emulators.optimize_hyperparameters!(em)
+    return em
+end
+
+function mcmc_gp_test_step(
+    prior::ParameterDistribution,
+    σ2_y,
+    em::Emulator;
+    mcmc_alg = "rwm",
+    obs_sample = 1.0,
+    init_params = 3.0,
+    step = 0.5,
+    norm_factor = nothing,
+    rng = Random.GLOBAL_RNG,
 )
     obs_sample = reshape(collect(obs_sample), 1) # scalar or Vector -> Vector
-    init_params = reshape(collect(init_params), 1) # scalar or Vector -> Vector
-    mcmc = MCMCWrapper(
-        MCMC_alg, obs_sample, prior, em; stepsize=init_stepsize, init_params=init_params
-    )
-
+    param_init = reshape(collect(init_params), 1) # scalar or Vector -> Vector
     # First let's run a short chain to determine a good step size
     new_step = optimize_stepsize(mcmc; init_stepsize=init_stepsize, N=5000)
 
@@ -74,28 +101,48 @@ function mcmc_test_template(
     chain = sample(mcmc, 100_000; stepsize = new_step, discard_initial = 1000)
     posterior_distribution = get_posterior(mcmc, chain)      
     #post_mean = mean(posterior, dims=1)[1]
-    posterior_mean = get_mean(posterior_distribution)
+    posterior_mean = mean(posterior_distribution)
+
+    return new_step, posterior_mean[1]
+end
+
+function mcmc_test_template(
+    prior:: ParameterDistribution, σ2_y, em::Emulator;
+    mcmc_alg = EmulatorRWSampling(), obs_sample = 1.0, init_params = 3.0, step = 0.25,
+    rng = Random.GLOBAL_RNG
+)
+    obs_sample = reshape(collect(obs_sample), 1) # scalar or Vector -> Vector
+    init_params = reshape(collect(init_params), 1) # scalar or Vector -> Vector
+    mcmc = MCMCWrapper(
+        mcmc_alg, obs_sample, prior, em; init_params=init_params
+    )
+
+    # First let's run a short chain to determine a good step size
+    new_step = optimize_stepsize(mcmc; init_stepsize=step, N=5000)
+
+    # Now begin the actual MCMC
+    chain = sample(rng, mcmc, 100_000; stepsize = new_step, discard_initial = 1000)
+    posterior_distribution = get_posterior(mcmc, chain)      
+    #post_mean = mean(posterior, dims=1)[1]
+    posterior_mean = mean(posterior_distribution)
 
     return new_step, posterior_mean[1]
 end
 
 @testset "MarkovChainMonteCarlo" begin
     obs_sample = [1.0]
+    prior = test_prior()
+    y, σ2_y, iopairs, rng = test_data(; rng_seed = 42, n = 40, var_y = 0.05)
     mcmc_params = Dict(
-        :MCMC_alg => EmulatorRWSampling(),
+        :mcmc_alg => EmulatorRWSampling(),
         :obs_sample => obs_sample,
         :init_params => [3.0],
-        :init_stepsize => 0.5
+        :step => 0.5,
+        :rng => rng
     )
-    prior = test_prior()
-    y, σ2_y, iopairs = test_data(; rng_seed = 42, n = 40, var_y = 0.05)
 
     @testset "Constructor: standardize" begin
-        em = test_em_gp_1(
-            y, σ2_y, iopairs; 
-            normalize_inputs=false, standardize_outputs=false, 
-            standardize_outputs_factors=nothing, retained_svd_frac=1.0
-        )
+        em = test_gp_1(y, σ2_y, iopairs)
         test_obs = MarkovChainMonteCarlo.to_decorrelated(obs_sample, em)
         # The MCMC stored a SVD-transformed sample,
         # 1.0/sqrt(0.05) * obs_sample ≈ 4.472
@@ -103,11 +150,7 @@ end
     end
 
     @testset "Sine GP & RW Metropolis" begin
-        em_1 = test_em_gp_1(
-            y, σ2_y, iopairs; 
-            normalize_inputs=false,
-            standardize_outputs_factors=nothing, retained_svd_frac=1.0
-        )
+        em_1 = test_gp_1(y, σ2_y, iopairs)
         new_step, posterior_mean_1 = mcmc_test_template(prior, σ2_y, em_1; mcmc_params...)
         @test isapprox(new_step, 0.5; atol=0.1)
         # difference between mean_1 and ground truth comes from MCMC convergence and GP sampling
@@ -116,11 +159,7 @@ end
         # now test SVD normalization
         norm_factor = 10.0
         norm_factor = fill(norm_factor, size(y[:,1])) # must be size of output dim
-        em_2 = test_em_gp_1(
-            y, σ2_y, iopairs; 
-            normalize_inputs=false,
-            standardize_outputs_factors=norm_factor, retained_svd_frac=0.95
-        )
+        em_2 = test_gp_2(y, σ2_y, iopairs; norm_factor = norm_factor)
         _, posterior_mean_2 = mcmc_test_template(prior, σ2_y, em_2; mcmc_params...)
         # difference between mean_1 and mean_2 only from MCMC convergence
         @test isapprox(posterior_mean_2, posterior_mean_1; atol=0.1)
