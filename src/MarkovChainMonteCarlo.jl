@@ -132,7 +132,7 @@ function AdvancedMH.transition(
     return MCMCState(params, log_density, true)
 end
 
-# tell propose() what to do with `MCMCState`s; scale by stepsize if given
+# method extending AdvancedMH.propose() to variable/explicitly given stepsize
 function AdvancedMH.propose(
     rng::Random.AbstractRNG,
     sampler::AdvancedMH.MHSampler,
@@ -140,8 +140,7 @@ function AdvancedMH.propose(
     current_state::MCMCState;
     stepsize::FT = 1.0
 ) where {FT<:AbstractFloat}
-    delta_params = AdvancedMH.propose(rng, sampler.proposal, model)
-    return current_state.params + stepsize * delta_params
+    return current_state.params + stepsize * rand(rng, sampler.proposal)
 end
 
 # Copy a MCMCState and set accepted = false
