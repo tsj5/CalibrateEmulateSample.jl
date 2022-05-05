@@ -81,34 +81,9 @@ function test_gp_2(y, σ2_y, iopairs::PairedDataContainer; norm_factor = nothing
     return em
 end
 
-function mcmc_gp_test_step(
-    prior::ParameterDistribution,
-    σ2_y,
-    em::Emulator;
-    mcmc_alg = "rwm",
-    obs_sample = 1.0,
-    init_params = 3.0,
-    step = 0.5,
-    norm_factor = nothing,
-    rng = Random.GLOBAL_RNG,
-)
-    obs_sample = reshape(collect(obs_sample), 1) # scalar or Vector -> Vector
-    param_init = reshape(collect(init_params), 1) # scalar or Vector -> Vector
-    # First let's run a short chain to determine a good step size
-    new_step = optimize_stepsize(mcmc; init_stepsize=init_stepsize, N=5000)
-
-    # Now begin the actual MCMC
-    chain = sample(mcmc, 100_000; stepsize = new_step, discard_initial = 1000)
-    posterior_distribution = get_posterior(mcmc, chain)      
-    #post_mean = mean(posterior, dims=1)[1]
-    posterior_mean = mean(posterior_distribution)
-
-    return new_step, posterior_mean[1]
-end
-
 function mcmc_test_template(
     prior:: ParameterDistribution, σ2_y, em::Emulator;
-    mcmc_alg = EmulatorRWSampling(), obs_sample = 1.0, init_params = 3.0, step = 0.25,
+    mcmc_alg = RWMHSampling(), obs_sample = 1.0, init_params = 3.0, step = 0.25,
     rng = Random.GLOBAL_RNG
 )
     obs_sample = reshape(collect(obs_sample), 1) # scalar or Vector -> Vector
@@ -134,7 +109,7 @@ end
     prior = test_prior()
     y, σ2_y, iopairs, rng = test_data(; rng_seed = 42, n = 40, var_y = 0.05)
     mcmc_params = Dict(
-        :mcmc_alg => EmulatorRWSampling(),
+        :mcmc_alg => RWMHSampling(),
         :obs_sample => obs_sample,
         :init_params => [3.0],
         :step => 0.5,
@@ -163,5 +138,29 @@ end
         _, posterior_mean_2 = mcmc_test_template(prior, σ2_y, em_2; mcmc_params...)
         # difference between mean_1 and mean_2 only from MCMC convergence
         @test isapprox(posterior_mean_2, posterior_mean_1; atol=0.1)
+    end
+
+    @testset "Sine GP & pCN" begin
+        mcmc_params = Dict(
+            :mcmc_alg => pCNMHSampling(),
+            :obs_sample => obs_sample,
+            :init_params => [3.0],
+            :step => 0.5,
+            :rng => rng
+        )
+
+        em_1 = test_gp_1(y, σ2_y, iopairs)
+        new_step, posterior_mean_1 = mcmc_test_template(prior, σ2_y, em_1; mcmc_params...)
+        @test isapprox(new_step, 1.0; atol=0.1)
+        # difference between mean_1 and ground truth comes from MCMC convergence and GP sampling
+        @test isapprox(posterior_mean_1, π/2; atol=4e-1)
+
+        # now test SVD normalization
+        norm_factor = 10.0
+        norm_factor = fill(norm_factor, size(y[:, 1])) # must be size of output dim
+        em_2 = test_gp_2(y, σ2_y, iopairs; norm_factor = norm_factor)
+        _, posterior_mean_2 = mcmc_test_template(prior, σ2_y, em_2; mcmc_params...)
+        # difference between mean_1 and mean_2 only from MCMC convergence
+        @test isapprox(posterior_mean_2, posterior_mean_1; atol = 0.1)
     end
 end
