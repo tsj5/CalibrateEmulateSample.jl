@@ -17,8 +17,7 @@ import AbstractMCMC: sample # Reexport sample()
 using AbstractMCMC
 import AdvancedMH
 
-export
-    EmulatorPosteriorModel,
+export EmulatorPosteriorModel,
     MetropolisHastingsSampler,
     MCMCProtocol,
     RWMHSampling,
@@ -40,8 +39,8 @@ $(DocStringExtensions.TYPEDSIGNATURES)
 Transform samples from the original (correlated) coordinate system to the SVD-decorrelated
 coordinate system used by [`Emulator`](@ref). Used in the constructor for [`MCMCWrapper`](@ref).
 """
-function to_decorrelated(data::AbstractMatrix{FT}, em::Emulator{FT}) where {FT<:AbstractFloat}
-    if em.standardize_outputs && em.standardize_outputs_factors !== nothing 
+function to_decorrelated(data::AbstractMatrix{FT}, em::Emulator{FT}) where {FT <: AbstractFloat}
+    if em.standardize_outputs && em.standardize_outputs_factors !== nothing
         # standardize() data by scale factors, if they were given
         data = data ./ em.standardize_outputs_factors
     end
@@ -49,13 +48,13 @@ function to_decorrelated(data::AbstractMatrix{FT}, em::Emulator{FT}) where {FT<:
     if decomp !== nothing
         # Use SVD decomposition of obs noise cov, if given, to transform data to 
         # decorrelated coordinates.
-        inv_sqrt_singvals = Diagonal(1.0 ./ sqrt.(decomp.S)) 
+        inv_sqrt_singvals = Diagonal(1.0 ./ sqrt.(decomp.S))
         return inv_sqrt_singvals * decomp.Vt * data
     else
         return data
     end
 end
-function to_decorrelated(data::AbstractVector{FT}, em::Emulator{FT}) where {FT<:AbstractFloat}
+function to_decorrelated(data::AbstractVector{FT}, em::Emulator{FT}) where {FT <: AbstractFloat}
     # method for single sample
     out_data = to_decorrelated(reshape(data, :, 1), em)
     return vec(out_data)
@@ -90,7 +89,9 @@ struct RWMetropolisHastings{D} <: AdvancedMH.MHSampler
 end
 # Define method needed by AdvancedMH for new Sampler
 AdvancedMH.logratio_proposal_density(
-    sampler::RWMetropolisHastings, transition_prev::AdvancedMH.AbstractTransition, candidate
+    sampler::RWMetropolisHastings,
+    transition_prev::AdvancedMH.AbstractTransition,
+    candidate,
 ) = AdvancedMH.logratio_proposal_density(sampler.proposal, transition_prev.params, candidate)
 
 function _get_proposal(prior::ParameterDistribution)
@@ -114,8 +115,7 @@ Constructor for all `Sampler` objects, with one method for each supported MCMC a
     (possibly in a transformed space) and we assume enough fidelity in the Emulator that 
     inference isn't prior-dominated.
 """
-MetropolisHastingsSampler(::RWMHSampling, prior::ParameterDistribution) =
-    RWMetropolisHastings(_get_proposal(prior))
+MetropolisHastingsSampler(::RWMHSampling, prior::ParameterDistribution) = RWMetropolisHastings(_get_proposal(prior))
 
 """
 $(DocStringExtensions.TYPEDEF)
@@ -132,11 +132,12 @@ struct pCNMetropolisHastings{D} <: AdvancedMH.MHSampler
 end
 # Define method needed by AdvancedMH for new Sampler
 AdvancedMH.logratio_proposal_density(
-    sampler::pCNMetropolisHastings, transition_prev::AdvancedMH.AbstractTransition, candidate
+    sampler::pCNMetropolisHastings,
+    transition_prev::AdvancedMH.AbstractTransition,
+    candidate,
 ) = AdvancedMH.logratio_proposal_density(sampler.proposal, transition_prev.params, candidate)
 
-MetropolisHastingsSampler(::pCNMHSampling, prior::ParameterDistribution) = 
-    pCNMetropolisHastings(_get_proposal(prior))
+MetropolisHastingsSampler(::pCNMHSampling, prior::ParameterDistribution) = pCNMetropolisHastings(_get_proposal(prior))
 
 # ------------------------------------------------------------------------------------------
 # Use emulated model in sampler
@@ -151,23 +152,21 @@ with the MCMC, which is the role of the `DensityModel` class in the `AbstractMCM
 """
 function EmulatorPosteriorModel(
     prior::ParameterDistribution,
-    em::Emulator{FT}, 
-    obs_sample::AbstractVector{FT}
+    em::Emulator{FT},
+    obs_sample::AbstractVector{FT},
 ) where {FT <: AbstractFloat}
-    return AdvancedMH.DensityModel(
-        function (θ) 
-            # θ: model params we evaluate at; in original coords.
-            # transform_to_real = false means g, g_cov, obs_sample are in decorrelated coords.
-            #
-            # Recall predict() written to return multiple N_samples: expects input to be a 
-            # Matrix with N_samples columns. Returned g is likewise a Matrix, and g_cov is a
-            # Vector of N_samples covariance matrices. For MH, N_samples is always 1, so we 
-            # have to reshape()/re-cast input/output; simpler to do here than add a 
-            # predict() method.
-            g, g_cov = Emulators.predict(em, reshape(θ,:,1), transform_to_real=false)
-            return logpdf(MvNormal(obs_sample, g_cov[1]), vec(g)) + get_logpdf(prior, θ)
-       end
-    )
+    return AdvancedMH.DensityModel(function (θ)
+        # θ: model params we evaluate at; in original coords.
+        # transform_to_real = false means g, g_cov, obs_sample are in decorrelated coords.
+        #
+        # Recall predict() written to return multiple N_samples: expects input to be a 
+        # Matrix with N_samples columns. Returned g is likewise a Matrix, and g_cov is a
+        # Vector of N_samples covariance matrices. For MH, N_samples is always 1, so we 
+        # have to reshape()/re-cast input/output; simpler to do here than add a 
+        # predict() method.
+        g, g_cov = Emulators.predict(em, reshape(θ, :, 1), transform_to_real = false)
+        return logpdf(MvNormal(obs_sample, g_cov[1]), vec(g)) + get_logpdf(prior, θ)
+    end)
 end
 
 # ------------------------------------------------------------------------------------------
@@ -183,18 +182,18 @@ Metropolis-Hastings proposal) or old (from rejecting a proposal).
 # Fields
 $(DocStringExtensions.TYPEDFIELDS)
 """
-struct MCMCState{T, L<:Real} <: AdvancedMH.AbstractTransition
+struct MCMCState{T, L <: Real} <: AdvancedMH.AbstractTransition
     "Sampled value of the parameters at the current state of the MCMC chain."
-    params :: T
+    params::T
     "Log probability of `params`, as computed by the model using the prior."
-    log_density :: L
+    log_density::L
     "Whether this state resulted from accepting a new MH proposal."
-    accepted :: Bool
+    accepted::Bool
 end
 
 # Boilerplate from AdvancedMH:
 # Store the new draw and its log density.
-MCMCState(model::AdvancedMH.DensityModel, params, accepted=true) =
+MCMCState(model::AdvancedMH.DensityModel, params, accepted = true) =
     MCMCState(params, logdensity(model, params), accepted)
 
 # Calculate the log density of the model given some parameterization.
@@ -202,12 +201,7 @@ AdvancedMH.logdensity(model::AdvancedMH.DensityModel, t::MCMCState) = t.log_dens
 
 # AdvancedMH.transition() is only called to create a new proposal, so create a MCMCState
 # with accepted = true since that object will only be used if proposal is accepted.
-function AdvancedMH.transition(
-    sampler::AdvancedMH.MHSampler, 
-    model::AdvancedMH.DensityModel, 
-    params, 
-    log_density::Real
-)
+function AdvancedMH.transition(sampler::AdvancedMH.MHSampler, model::AdvancedMH.DensityModel, params, log_density::Real)
     return MCMCState(params, log_density, true)
 end
 
@@ -217,9 +211,9 @@ function AdvancedMH.propose(
     sampler::RWMetropolisHastings,
     model::AdvancedMH.DensityModel,
     current_state::MCMCState;
-    stepsize::FT = 1.0
-) where {FT<:AbstractFloat}
-    return current_state.params + stepsize * rand(rng, sampler.proposal)        
+    stepsize::FT = 1.0,
+) where {FT <: AbstractFloat}
+    return current_state.params + stepsize * rand(rng, sampler.proposal)
 end
 
 # method extending AdvancedMH.propose() for preconditioned Crank-Nicholson
@@ -228,8 +222,8 @@ function AdvancedMH.propose(
     sampler::pCNMetropolisHastings,
     model::AdvancedMH.DensityModel,
     current_state::MCMCState;
-    stepsize::FT = 1.0
-) where {FT<:AbstractFloat}
+    stepsize::FT = 1.0,
+) where {FT <: AbstractFloat}
     # Use prescription in Beskos et al (2017) "Geometric MCMC for infinite-dimensional 
     # inverse problems." for relating ρ to Euler stepsize:
     ρ = (1 - stepsize / 4) / (1 + stepsize / 4)
@@ -247,14 +241,15 @@ function AbstractMCMC.step(
     sampler::AdvancedMH.MHSampler,
     current_state::MCMCState;
     stepsize::FT = 1.0,
-    kwargs...
-) where {FT<:AbstractFloat}
+    kwargs...,
+) where {FT <: AbstractFloat}
     # Generate a new proposal.
     new_params = AdvancedMH.propose(rng, sampler, model, current_state; stepsize = stepsize)
 
     # Calculate the log acceptance probability and the log density of the candidate.
     new_log_density = AdvancedMH.logdensity(model, new_params)
-    log_α = new_log_density - AdvancedMH.logdensity(model, current_state) +
+    log_α =
+        new_log_density - AdvancedMH.logdensity(model, current_state) +
         AdvancedMH.logratio_proposal_density(sampler, current_state, new_params)
 
     # Decide whether to return the previous params or the new one.
@@ -281,10 +276,10 @@ function AbstractMCMC.bundle_samples(
     sampler::AdvancedMH.MHSampler,
     state,
     chain_type::Type{MCMCChains.Chains};
-    discard_initial=0,
-    thinning=1,
-    param_names=missing,
-    kwargs...
+    discard_initial = 0,
+    thinning = 1,
+    param_names = missing,
+    kwargs...,
 )
     # Turn all the transitions into a vector-of-vectors.
     vals = [vcat(t.params, t.log_density, t.accepted) for t in ts]
@@ -300,9 +295,11 @@ function AbstractMCMC.bundle_samples(
 
     # Bundle everything up and return a MCChains.Chains struct.
     return MCMCChains.Chains(
-        vals, vcat(param_names, internal_names), 
-        (parameters = param_names, internals = internal_names,);
-        start=discard_initial + 1, thin=thinning,
+        vals,
+        vcat(param_names, internal_names),
+        (parameters = param_names, internals = internal_names);
+        start = discard_initial + 1,
+        thin = thinning,
     )
 end
 
@@ -312,10 +309,10 @@ function AbstractMCMC.bundle_samples(
     sampler::AdvancedMH.Ensemble,
     state,
     chain_type::Type{MCMCChains.Chains};
-    discard_initial=0,
-    thinning=1,
-    param_names=missing,
-    kwargs...
+    discard_initial = 0,
+    thinning = 1,
+    param_names = missing,
+    kwargs...,
 )
     # Preallocate return array
     # NOTE: requires constant dimensionality.
@@ -325,7 +322,7 @@ function AbstractMCMC.bundle_samples(
     vals = Array{Float64, 3}(undef, nsamples, n_params + 2, sampler.n_walkers)
 
     for n in 1:nsamples
-        for i in 1:sampler.n_walkers
+        for i in 1:(sampler.n_walkers)
             walker = ts[n][i]
             for j in 1:n_params
                 vals[n, j, i] = walker.params[j]
@@ -346,9 +343,11 @@ function AbstractMCMC.bundle_samples(
 
     # Bundle everything up and return a MCChains.Chains struct.
     return MCMCChains.Chains(
-        vals, vcat(param_names, internal_names), 
+        vals,
+        vcat(param_names, internal_names),
         (parameters = param_names, internals = internal_names);
-        start=discard_initial + 1, thin=thinning,
+        start = discard_initial + 1,
+        thin = thinning,
     )
 end
 
@@ -407,9 +406,9 @@ function MCMCWrapper(
     prior::ParameterDistribution,
     em::Emulator;
     init_params::AbstractVector{FT},
-    burnin::IT=0,
-    kwargs...
-) where {FT<:AbstractFloat, IT<:Integer}
+    burnin::IT = 0,
+    kwargs...,
+) where {FT <: AbstractFloat, IT <: Integer}
     obs_sample = to_decorrelated(obs_sample, em)
     log_posterior_map = EmulatorPosteriorModel(prior, em, obs_sample)
     mh_proposal_sampler = MetropolisHastingsSampler(mcmc_alg, prior)
@@ -417,7 +416,7 @@ function MCMCWrapper(
         :init_params => deepcopy(init_params),
         :param_names => get_name(prior),
         :discard_initial => burnin,
-        :chain_type => MCMCChains.Chains
+        :chain_type => MCMCChains.Chains,
     )
     sample_kwargs = merge(sample_kwargs, kwargs) # override defaults with any explicit values
     return MCMCWrapper(prior, log_posterior_map, mh_proposal_sampler, sample_kwargs)
@@ -459,9 +458,7 @@ Supported methods are:
 function sample(rng::Random.AbstractRNG, mcmc::MCMCWrapper, args...; kwargs...)
     # any explicit function kwargs override defaults in mcmc object
     kwargs = merge(mcmc.sample_kwargs, NamedTuple(kwargs))
-    return AbstractMCMC.mcmcsample(
-        rng, mcmc.log_posterior_map, mcmc.mh_proposal_sampler, args...; kwargs...
-    )
+    return AbstractMCMC.mcmcsample(rng, mcmc.log_posterior_map, mcmc.mh_proposal_sampler, args...; kwargs...)
 end
 # use default rng if none given
 sample(mcmc::MCMCWrapper, args...; kwargs...) = sample(Random.GLOBAL_RNG, mcmc, args...; kwargs...)
@@ -493,7 +490,7 @@ end
 
 function _find_mcmc_step_log(it, stepsize, acc_ratio, chain::MCMCChains.Chains)
     str_ = @sprintf "%d stepsize: %.3g acc rate: %.3g\n\tparams:" it stepsize acc_ratio
-    for p in pairs(get(chain; section=:parameters)) # can't map() over Pairs
+    for p in pairs(get(chain; section = :parameters)) # can't map() over Pairs
         str_ *= @sprintf " %s: %.3g" p.first last(p.second)
     end
     println(str_)
@@ -510,15 +507,19 @@ The criterion used is that Metropolis-Hastings proposals should be accepted betw
 35% of the time.
 """
 function optimize_stepsize(
-    rng::Random.AbstractRNG, mcmc::MCMCWrapper; 
-    init_stepsize = 1.0, N = 2000, max_iter = 20, sample_kwargs...
+    rng::Random.AbstractRNG,
+    mcmc::MCMCWrapper;
+    init_stepsize = 1.0,
+    N = 2000,
+    max_iter = 20,
+    sample_kwargs...,
 )
     doubled = false
     halved = false
     stepsize = init_stepsize
     _find_mcmc_step_log(mcmc)
-    for it = 1:max_iter
-        trial_chain = sample(rng, mcmc, N; stepsize=stepsize, sample_kwargs...)
+    for it in 1:max_iter
+        trial_chain = sample(rng, mcmc, N; stepsize = stepsize, sample_kwargs...)
         acc_ratio = accept_ratio(trial_chain)
         _find_mcmc_step_log(it, stepsize, acc_ratio, trial_chain)
         change_step = true
@@ -563,13 +564,11 @@ function get_posterior(mcmc::MCMCWrapper, chain::MCMCChains.Chains)
     flat_constraints = get_all_constraints(mcmc.prior)
     # live in same space as prior
     p_constraints = [flat_constraints[slice] for slice in p_slices]
-    
+
     # Cast data in chain to a ParameterDistribution object. Data layout in Chain is an
     # (N_samples x n_params x n_chains) AxisArray, so samples are in rows.
     p_chain = Array(Chains(chain, :parameters)) # discard internal/diagnostic data
-    posterior_samples = [
-        Samples(p_chain[:, slice, 1], params_are_columns=false) for slice in p_slices
-    ]
+    posterior_samples = [Samples(p_chain[:, slice, 1], params_are_columns = false) for slice in p_slices]
     posterior_distribution = ParameterDistribution(posterior_samples, p_constraints, p_names)
     return posterior_distribution
 end

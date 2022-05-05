@@ -81,7 +81,7 @@ function Emulator(
     normalize_inputs::Bool = true,
     standardize_outputs::Bool = false,
     standardize_outputs_factors::Union{AbstractVector{FT}, Nothing} = nothing,
-    retained_svd_frac::FT=1.0
+    retained_svd_frac::FT = 1.0,
 ) where {FT <: AbstractFloat}
 
     # For Consistency checks
@@ -120,9 +120,8 @@ function Emulator(
 
     #Transform data if obs_noise_cov available 
     # (if obs_noise_cov==nothing, transformed_data is equal to data)
-    decorrelated_training_outputs, decomposition = svd_transform(
-        training_outputs, obs_noise_cov, retained_svd_frac=retained_svd_frac
-    )
+    decorrelated_training_outputs, decomposition =
+        svd_transform(training_outputs, obs_noise_cov, retained_svd_frac = retained_svd_frac)
 
     # write new pairs structure 
     if retained_svd_frac < 1.0
@@ -145,7 +144,7 @@ function Emulator(
         standardize_outputs,
         standardize_outputs_factors,
         decomposition,
-        retained_svd_frac
+        retained_svd_frac,
     )
 end
 
@@ -321,7 +320,7 @@ in S are sorted in descending order.
 function svd_transform(
     data::AbstractMatrix{FT},
     obs_noise_cov::Union{AbstractMatrix{FT}, Nothing};
-    retained_svd_frac::FT=1.0
+    retained_svd_frac::FT = 1.0,
 ) where {FT <: AbstractFloat}
     if obs_noise_cov === nothing
         # no-op case
@@ -354,9 +353,8 @@ function svd_transform(
     retained_svd_frac::FT = 1.0,
 ) where {FT <: AbstractFloat}
     # method for 1D data
-    transformed_data, decomposition = svd_transform(
-        reshape(data, :, 1), obs_noise_cov; retained_svd_frac = retained_svd_frac
-    )
+    transformed_data, decomposition =
+        svd_transform(reshape(data, :, 1), obs_noise_cov; retained_svd_frac = retained_svd_frac)
     return vec(transformed_data), decomposition
 end
 
@@ -366,9 +364,7 @@ function svd_transform(
     retained_svd_frac::FT = 1.0,
 ) where {FT <: AbstractFloat}
     # method for UniformScaling
-    return svd_transform(
-        data, Diagonal(obs_noise_cov, size(data, 1)); retained_svd_frac = retained_svd_frac
-    )
+    return svd_transform(data, Diagonal(obs_noise_cov, size(data, 1)); retained_svd_frac = retained_svd_frac)
 end
 
 """
@@ -397,12 +393,12 @@ function svd_reverse_transform_mean_cov(
     # We created meanvGP = D_inv * Vt * mean_v so meanv = V * D * meanvGP
     sqrt_singular_values = Diagonal(sqrt.(decomposition.S))
     transformed_μ = decomposition.V * sqrt_singular_values * μ
-    
+
     transformed_σ2 = Vector{Symmetric{FT, Matrix{FT}}}(undef, N_predicted_points)
     # Back transformation
 
     for j in 1:N_predicted_points
-        σ2_j = decomposition.V * sqrt_singular_values * Diagonal(σ2[:,j]) * sqrt_singular_values * decomposition.Vt
+        σ2_j = decomposition.V * sqrt_singular_values * Diagonal(σ2[:, j]) * sqrt_singular_values * decomposition.Vt
         transformed_σ2[j] = Symmetric(σ2_j)
     end
 

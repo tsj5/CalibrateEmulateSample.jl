@@ -3,7 +3,8 @@ module GModel
 using DocStringExtensions
 
 # TODO: Remove build (which currently prevents segfault):
-using Pkg; Pkg.build()
+using Pkg
+Pkg.build()
 
 using Random
 using Distributions
