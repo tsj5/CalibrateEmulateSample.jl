@@ -14,6 +14,10 @@ get_posterior
 optimize_stepsize
 ```
 
+See [AbstractMCMC sampling API](@ref) for background on our use of Turing.jl's 
+[AbstractMCMC](https://turing.ml/dev/docs/for-developers/interface) API for 
+MCMC sampling.
+
 ## Sampler algorithms
 
 ```@docs
