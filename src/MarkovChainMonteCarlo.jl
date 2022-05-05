@@ -19,7 +19,7 @@ import AdvancedMH
 
 export
     EmulatorPosteriorModel,
-    RWMHSampler,
+    MetropolisHastingsSampler,
     MCMCProtocol,
     RWMHSampling,
     pCNMHSampling,
@@ -38,7 +38,7 @@ export
 $(DocStringExtensions.TYPEDSIGNATURES)
 
 Transform samples from the original (correlated) coordinate system to the SVD-decorrelated
-coordinate system used by Emulator.
+coordinate system used by [`Emulator`](@ref). Used in the constructor for [`MCMCWrapper`](@ref).
 """
 function to_decorrelated(data::AbstractMatrix{FT}, em::Emulator{FT}) where {FT<:AbstractFloat}
     if em.standardize_outputs && em.standardize_outputs_factors !== nothing 
@@ -102,7 +102,17 @@ end
 """
 $(DocStringExtensions.TYPEDSIGNATURES)
 
-Constructor for all Sampler objects, with one method for each supported MCMC algorithm.
+Constructor for all `Sampler` objects, with one method for each supported MCMC algorithm.
+
+!!! warning
+    Both currently implemented Samplers use a Gaussian approximation to the prior: 
+    specifically, new Metropolis-Hastings proposals are a scaled combination of the old 
+    parameter values and a random shift distributed as a Gaussian with the same covariance
+    as the `prior`. 
+    
+    This suffices for our current use case, in which our priors are Gaussian
+    (possibly in a transformed space) and we assume enough fidelity in the Emulator that 
+    inference isn't prior-dominated.
 """
 MetropolisHastingsSampler(::RWMHSampling, prior::ParameterDistribution) =
     RWMetropolisHastings(_get_proposal(prior))
@@ -134,25 +144,26 @@ MetropolisHastingsSampler(::pCNMHSampling, prior::ParameterDistribution) =
 """
 $(DocStringExtensions.TYPEDSIGNATURES)
 
-Factory which constructs `AdvancedMH.DensityModel` objects given a set of prior 
-distributions on the model parameters and an [`Emulator`](@ref), which encodes the 
-log-likelihood of the data given parameters. Together this yields the log density we're 
-attempting to sample from with the MCMC, which is the role of the `DensityModel` class in 
-the `AbstractMCMC` interface.
+Factory which constructs `AdvancedMH.DensityModel` objects given a prior on the model 
+parameters (`prior`) and an [`Emulator`](@ref) of the log-likelihood of the data given 
+parameters. Together these yield the log posterior density we're attempting to sample from 
+with the MCMC, which is the role of the `DensityModel` class in the `AbstractMCMC` interface.
 """
 function EmulatorPosteriorModel(
     prior::ParameterDistribution,
     em::Emulator{FT}, 
     obs_sample::AbstractVector{FT}
 ) where {FT <: AbstractFloat}
-    # recall predict() written to return multiple `N_samples`: expects input to be a Matrix
-    # with `N_samples` columns. Returned g is likewise a Matrix, and g_cov is a Vector of 
-    # `N_samples` covariance matrices. For MH, N_samples is always 1, so we have to 
-    # reshape()/re-cast input/output; simpler to do here than add a predict() method.
     return AdvancedMH.DensityModel(
         function (θ) 
             # θ: model params we evaluate at; in original coords.
             # transform_to_real = false means g, g_cov, obs_sample are in decorrelated coords.
+            #
+            # Recall predict() written to return multiple N_samples: expects input to be a 
+            # Matrix with N_samples columns. Returned g is likewise a Matrix, and g_cov is a
+            # Vector of N_samples covariance matrices. For MH, N_samples is always 1, so we 
+            # have to reshape()/re-cast input/output; simpler to do here than add a 
+            # predict() method.
             g, g_cov = Emulators.predict(em, reshape(θ,:,1), transform_to_real=false)
             return logpdf(MvNormal(obs_sample, g_cov[1]), vec(g)) + get_logpdf(prior, θ)
        end
@@ -165,9 +176,9 @@ end
 """
 $(DocStringExtensions.TYPEDEF)
 
-Extend the basic `AdvancedMH.Transition` (which encodes the current state of the MC during
+Extends the `AdvancedMH.Transition` (which encodes the current state of the MC during
 sampling) with a boolean flag to record whether this state is new (arising from accepting a
-MH proposal) or old (from rejecting a proposal).
+Metropolis-Hastings proposal) or old (from rejecting a proposal).
 
 # Fields
 $(DocStringExtensions.TYPEDFIELDS)
@@ -177,7 +188,7 @@ struct MCMCState{T, L<:Real} <: AdvancedMH.AbstractTransition
     params :: T
     "Log probability of `params`, as computed by the model using the prior."
     log_density :: L
-    "Whether this state resulted from accepting a new MC proposal."
+    "Whether this state resulted from accepting a new MH proposal."
     accepted :: Bool
 end
 
@@ -200,7 +211,7 @@ function AdvancedMH.transition(
     return MCMCState(params, log_density, true)
 end
 
-# method extending AdvancedMH.propose() to variable/explicitly given stepsize
+# method extending AdvancedMH.propose() to vanilla random walk with explicitly given stepsize
 function AdvancedMH.propose(
     rng::Random.AbstractRNG,
     sampler::RWMetropolisHastings,
@@ -228,7 +239,7 @@ end
 # Copy a MCMCState and set accepted = false
 reject_transition(t::MCMCState) = MCMCState(t.params, t.log_density, false)
 
-# Metropolis-Hastings logic. We need to add 2 things to implementation in AdvancedMH:
+# Metropolis-Hastings logic. We need to add 2 things to step() implementation in AdvancedMH:
 # 1) stepsize-dependent propose(); 2) record whether proposal accepted/rejected in MCMCState
 function AbstractMCMC.step(
     rng::Random.AbstractRNG,
@@ -347,14 +358,15 @@ end
 """
 $(DocStringExtensions.TYPEDEF)
 
-Top-level object to hold the prior, DensityModel and Sampler objects, as well as 
-arguments to be passed to the sampling function.
+Top-level class holding all configuration information needed for MCMC sampling: the prior, 
+emulated likelihood and sampling algorithm (`DensityModel` and `Sampler`, respectively, in 
+AbstractMCMC's terminology).
 
 # Fields
 $(DocStringExtensions.TYPEDFIELDS)
 """
 struct MCMCWrapper
-    "`EnsembleKalmanProcess.ParameterDistribution` object describing the prior distribution on parameter values."
+    "[`ParameterDistribution`](https://clima.github.io/EnsembleKalmanProcesses.jl/dev/parameter_distributions/) object describing the prior distribution on parameter values."
     prior::ParameterDistribution
     "`AdvancedMH.DensityModel` object, used to evaluate the posterior density being sampled from."
     log_posterior_map::AbstractMCMC.AbstractModel
@@ -370,15 +382,24 @@ $(DocStringExtensions.TYPEDSIGNATURES)
 Constructor for [`MCMCWrapper`](@ref) which performs the same standardization (SVD 
 decorrelation) that was applied in the Emulator. It creates and wraps an instance of 
 [`EmulatorPosteriorModel`](@ref), for sampling from the Emulator, and 
-[`RWMHSampler`](@ref), for generating the MC proposals.
+[`MetropolisHastingsSampler`](@ref), for generating the MC proposals.
 
-- `obs_sample`: A single sample from the observations. Can, e.g., be picked from an Obs 
-  struct using get_obs_sample.
-- `prior`: array of length `N_parameters` containing the parameters' prior distributions.
+- `mcmc_alg`: [`MCMCProtocol`](@ref) describing the MCMC sampling algorithm to use. Currently
+  implemented algorithms are:
+
+  - [`RWMHSampling`](@ref): Metropolis-Hastings sampling from a vanilla random walk with
+    fixed stepsize.
+  - [`pCNMHSampling`](@ref): Metropolis-Hastings sampling using the preconditioned 
+    Crank-Nicholson algorithm, which has a well-behaved small-stepsize limit.
+
+- `obs_sample`: A single sample from the observations. Can, e.g., be picked from an 
+  Observation struct using `get_obs_sample`.
+- `prior`: [`ParameterDistribution`](https://clima.github.io/EnsembleKalmanProcesses.jl/dev/parameter_distributions/) 
+  object containing the parameters' prior distributions.
 - `em`: [`Emulator`](@ref) to sample from. 
 - `stepsize`: MCMC step size, applied as a scaling to the prior covariance.
-- `init_params`: Starting point for MCMC sampling.
-- `burnin`: Initial number of MCMC steps to discard (pre-convergence).
+- `init_params`: Starting parameter values for MCMC sampling.
+- `burnin`: Initial number of MCMC steps to discard from output (pre-convergence).
 """
 function MCMCWrapper(
     mcmc_alg::MCMCProtocol,
@@ -402,9 +423,39 @@ function MCMCWrapper(
     return MCMCWrapper(prior, log_posterior_map, mh_proposal_sampler, sample_kwargs)
 end
 
-# Define new methods extending AbstractMCMC.sample() using the MCMCWrapper object.
+"""
+   $(DocStringExtensions.FUNCTIONNAME)([rng,] mcmc::MCMCWrapper, args...; kwargs...)
 
-# All cases where rng given
+Extends the `sample` methods of AbstractMCMC (which extends StatsBase) to sample from the 
+emulated posterior, using the MCMC sampling algorithm and [`Emulator`](@ref) configured in 
+[`MCMCWrapper`](@ref). Returns a [`MCMCChains.Chains`](https://beta.turing.ml/MCMCChains.jl/dev/) 
+object containing the samples. 
+
+Supported methods are:
+
+- `sample([rng, ]mcmc, N; kwargs...)`
+
+  Return a `MCMCChains.Chains` object containing `N` samples from the emulated posterior.
+
+- `sample([rng, ]mcmc, isdone; kwargs...)`
+
+  Sample from the `model` with the Markov chain Monte Carlo `sampler` until a convergence 
+  criterion `isdone` returns `true`, and return the samples. The function `isdone` has the 
+  signature
+
+  ```julia
+      isdone(rng, model, sampler, samples, state, iteration; kwargs...)
+  ```
+
+  where `state` and `iteration` are the current state and iteration of the sampler, 
+  respectively. It should return `true` when sampling should end, and `false` otherwise.
+
+- `sample([rng, ]mcmc, parallel_type, N, nchains; kwargs...)`
+
+  Sample `nchains` Monte Carlo Markov chains in parallel according to `parallel_type`, which
+  may be `MCMCThreads()` or `MCMCDistributed()` for thread and parallel sampling, 
+  respectively.
+"""
 function sample(rng::Random.AbstractRNG, mcmc::MCMCWrapper, args...; kwargs...)
     # any explicit function kwargs override defaults in mcmc object
     kwargs = merge(mcmc.sample_kwargs, NamedTuple(kwargs))
@@ -452,9 +503,11 @@ end
 """
 $(DocStringExtensions.TYPEDSIGNATURES)
 
-Use heuristics to choose a stepsize for the [`mh_proposal_sampler`](@ref) element of `mcmc` 
-which yields fast convergence of the Markov chain, namely that Metropolis-Hastings proposals
-should be accepted between 15% and 35% of the time.
+Uses a heuristic to return a stepsize for the `mh_proposal_sampler` element of 
+[`MCMCWrapper`](@ref) which yields fast convergence of the Markov chain.
+
+The criterion used is that Metropolis-Hastings proposals should be accepted between 15% and 
+35% of the time.
 """
 function optimize_stepsize(
     rng::Random.AbstractRNG, mcmc::MCMCWrapper; 
@@ -498,10 +551,11 @@ optimize_stepsize(mcmc::MCMCWrapper; kwargs...) = optimize_stepsize(Random.GLOBA
 """
 $(DocStringExtensions.TYPEDSIGNATURES)
 
-Return a `ParameterDistribution` object corresponding to the empirical distribution of the 
-MC samples.
+Returns a `ParameterDistribution` object corresponding to the empirical distribution of the 
+samples in `chain`.
 
-NB: multiple MCMC.Chains not implemented.
+!!! note
+    This method does not currently support combining samples from multiple `Chains`.
 """
 function get_posterior(mcmc::MCMCWrapper, chain::MCMCChains.Chains)
     p_names = get_name(mcmc.prior)
