@@ -452,8 +452,9 @@ end
 """
 $(DocStringExtensions.TYPEDSIGNATURES)
 
-Use heuristics to choose a stepsize for the [`PriorProposalMHSampler`](@ref) element of 
-`mcmc`, namely that MC proposals should be accepted between 15% and 35% of the time.
+Use heuristics to choose a stepsize for the [`mh_proposal_sampler`](@ref) element of `mcmc` 
+which yields fast convergence of the Markov chain, namely that Metropolis-Hastings proposals
+should be accepted between 15% and 35% of the time.
 """
 function optimize_stepsize(
     rng::Random.AbstractRNG, mcmc::MCMCWrapper; 
@@ -461,12 +462,13 @@ function optimize_stepsize(
 )
     doubled = false
     halved = false
+    stepsize = init_stepsize
     _find_mcmc_step_log(mcmc)
     for it = 1:max_iter
-        stepsize = init_stepsize
-        trial_chain = sample(mcmc, N; stepsize=stepsize, sample_kwargs...)
+        trial_chain = sample(rng, mcmc, N; stepsize=stepsize, sample_kwargs...)
         acc_ratio = accept_ratio(trial_chain)
         _find_mcmc_step_log(it, stepsize, acc_ratio, trial_chain)
+        change_step = true
         if doubled && halved
             stepsize = 0.75 * stepsize
             doubled = false
@@ -478,7 +480,12 @@ function optimize_stepsize(
             stepsize = 2.0 * stepsize
             doubled = true
         else
+            change_step = false
+        end
+        if change_step
             @printf "Set sampler to new stepsize: %.3g\n" stepsize
+        else
+            @printf "Returning optimized stepsize: %.3g\n" stepsize
             return stepsize
         end
     end
