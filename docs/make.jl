@@ -44,8 +44,10 @@ makedocs(
 
 if !isempty(get(ENV, "CI", ""))
     deploydocs(
-        repo = "github.com/CliMA/CalibrateEmulateSample.jl.git",
+        repo = "github.com/tsj5/CalibrateEmulateSample.jl.git",
         versions = ["stable" => "v^", "v#.#.#", "dev" => "dev"],
         push_preview = true,
+        branch = "gh-pages",
+        devbranch = "trying"
     )
 end
