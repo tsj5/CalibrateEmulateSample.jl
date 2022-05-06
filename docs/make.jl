@@ -48,6 +48,7 @@ if !isempty(get(ENV, "CI", ""))
         versions = ["stable" => "v^", "v#.#.#", "dev" => "dev"],
         push_preview = true,
         branch = "gh-pages",
+        forcepush = true,
         devbranch = "trying"
     )
 end
